@@ -212,11 +212,16 @@ class Transcriber {
   }
 
   /**
-   * 現在の文字起こしテキストを取得
+   * 現在の文字起こしテキストを取得（確定テキスト＋暫定テキスト）
    * @returns {string}
    */
   getFullTranscript() {
-    return this.finalTranscript;
+    const final = (this.finalTranscript || '').trim();
+    const interim = (this.interimTranscript || '').trim();
+    if (final && interim) {
+      return `${final} ${interim}`;
+    }
+    return final || interim || '';
   }
 
   /**

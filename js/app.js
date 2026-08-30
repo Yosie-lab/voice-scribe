@@ -186,6 +186,17 @@ class VoiceScribeApp {
    */
   async _stopRecording() {
     try {
+      // 1. 停止前に文字起こしテキストを確実に取得
+      let transcript = (this.transcriber.getFullTranscript() || '').trim();
+
+      // 画面上のテキストからもフォールバック取得
+      if (!transcript) {
+        const textEl = document.getElementById('transcript-text');
+        if (textEl) {
+          transcript = (textEl.innerText || textEl.textContent || '').trim();
+        }
+      }
+
       // 文字起こし停止
       this.transcriber.stop();
 
@@ -224,8 +235,6 @@ class VoiceScribeApp {
         btn.style.opacity = '';
       });
 
-      // 文字起こしテキストを取得
-      const transcript = (this.transcriber.getFullTranscript() || '').trim();
       const activeLangBtn = document.querySelector('.lang-btn.active');
       const language = activeLangBtn ? activeLangBtn.dataset.lang : 'ja-JP';
       const duration = this.recorder.getElapsedTime() || 0;
