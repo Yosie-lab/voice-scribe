@@ -13,7 +13,7 @@ class UIManager {
     };
 
     // ナビゲーションボタン
-    this.navItems = document.querySelectorAll('.nav-item');
+    this.navItems = document.querySelectorAll('.nav-tab-btn, .nav-item');
 
     // 現在のビュー
     this.currentView = 'record';

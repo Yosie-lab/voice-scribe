@@ -1,7 +1,7 @@
 // VoiceScribe Service Worker
 // オフラインキャッシュとPWA対応
 
-const CACHE_NAME = 'voicescribe-v4';
+const CACHE_NAME = 'voicescribe-v5';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',

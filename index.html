@@ -24,15 +24,24 @@
 <body>
   <div id="app">
 
-    <!-- ===== ヘッダー ===== -->
+    <!-- ===== ヘッダー（タブナビゲーション統合型） ===== -->
     <header class="app-header">
       <div class="app-logo">
         <span class="app-logo-icon">🎙️</span>
-        <span>VoiceScribe</span>
+        <span class="app-logo-text">VoiceScribe</span>
       </div>
-      <div class="header-actions">
-        <!-- 将来の拡張用 -->
-      </div>
+
+      <!-- ヘッダー統合ナビゲーションタブ -->
+      <nav class="header-nav-tabs" id="header-nav-tabs">
+        <button class="nav-tab-btn active" data-view="record" id="nav-record">
+          <span class="tab-icon">🎙️</span>
+          <span>録音</span>
+        </button>
+        <button class="nav-tab-btn" data-view="list" id="nav-list">
+          <span class="tab-icon">📂</span>
+          <span>一覧</span>
+        </button>
+      </nav>
     </header>
 
     <!-- ===== 録音ビュー ===== -->
@@ -187,18 +196,6 @@
         </div>
       </div>
     </section>
-
-    <!-- ===== 下部ナビゲーション ===== -->
-    <nav class="nav-bar" id="nav-bar">
-      <button class="nav-item active" data-view="record" id="nav-record">
-        <span class="nav-icon">🎙️</span>
-        <span>録音</span>
-      </button>
-      <button class="nav-item" data-view="list" id="nav-list">
-        <span class="nav-icon">📂</span>
-        <span>一覧</span>
-      </button>
-    </nav>
 
     <!-- ===== トースト通知コンテナ ===== -->
     <div class="toast-container" id="toast-container"></div>
