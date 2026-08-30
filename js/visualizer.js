@@ -14,10 +14,10 @@ class AudioVisualizer {
     this.dataArray = null;
     this.isActive = false;
 
-    // ビジュアライザー設定
-    this.barCount = 64;
-    this.barGap = 2;
-    this.smoothingFactor = 0.85;
+    // ビジュアライザー設定（コンパクトなミニ音量バー）
+    this.barCount = 7;
+    this.barGap = 2.5;
+    this.smoothingFactor = 0.7;
 
     // Canvas解像度の設定
     this._setupCanvas();
@@ -31,6 +31,7 @@ class AudioVisualizer {
   _setupCanvas() {
     const dpr = window.devicePixelRatio || 1;
     const rect = this.canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
     this.canvas.width = rect.width * dpr;
     this.canvas.height = rect.height * dpr;
     this.ctx.scale(dpr, dpr);
@@ -46,7 +47,7 @@ class AudioVisualizer {
     try {
       this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
       this.analyser = this.audioContext.createAnalyser();
-      this.analyser.fftSize = 256;
+      this.analyser.fftSize = 64;
       this.analyser.smoothingTimeConstant = this.smoothingFactor;
 
       this.source = this.audioContext.createMediaStreamSource(stream);
@@ -55,8 +56,9 @@ class AudioVisualizer {
       this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
       this.isActive = true;
 
+      this._setupCanvas();
       this._draw();
-      console.log('ビジュアライザー開始');
+      console.log('ミニ音量メーター開始');
     } catch (error) {
       console.error('ビジュアライザーエラー:', error);
     }
@@ -83,13 +85,12 @@ class AudioVisualizer {
       this.audioContext = null;
     }
 
-    // フェードアウトして消去
     this._drawIdle();
-    console.log('ビジュアライザー停止');
+    console.log('ミニ音量メーター停止');
   }
 
   /**
-   * 波形を描画するメインループ
+   * 波形を描画するメインループ（極小シアンミニレベルメーター）
    * @private
    */
   _draw() {
@@ -99,64 +100,55 @@ class AudioVisualizer {
 
     this.analyser.getByteFrequencyData(this.dataArray);
 
-    // Canvas消去
     this.ctx.clearRect(0, 0, this.width, this.height);
 
-    const centerY = this.height / 2;
-    const barWidth = (this.width - this.barGap * (this.barCount - 1)) / this.barCount;
-    const maxBarHeight = this.height * 0.8;
+    const totalWidth = this.width;
+    const barWidth = Math.max(2, (totalWidth - this.barGap * (this.barCount - 1)) / this.barCount);
+    const maxBarHeight = this.height * 0.85;
 
     for (let i = 0; i < this.barCount; i++) {
-      // 周波数データのインデックスをマッピング
-      const dataIndex = Math.floor((i / this.barCount) * this.dataArray.length);
-      const value = this.dataArray[dataIndex] / 255;
+      const dataIndex = Math.min(this.dataArray.length - 1, i * 2);
+      const rawVal = this.dataArray[dataIndex] / 255;
+      const value = Math.max(0.15, rawVal);
 
-      const barHeight = Math.max(2, value * maxBarHeight);
+      const barHeight = Math.max(3, value * maxBarHeight);
       const x = i * (barWidth + this.barGap);
-      const y = centerY - barHeight / 2;
+      const y = (this.height - barHeight) / 2;
 
-      // グラデーションカラー（紫→シアン）
-      const hue = 260 + (i / this.barCount) * 60;  // 260（紫）→ 320
-      const saturation = 70 + value * 30;
-      const lightness = 40 + value * 30;
-      const alpha = 0.5 + value * 0.5;
-
-      // バーの角丸描画
+      // 洗練されたエレクトリックシアン〜アイスブルーグラデーション
       this.ctx.beginPath();
       this.ctx.roundRect(x, y, barWidth, barHeight, barWidth / 2);
-      this.ctx.fillStyle = `hsla(${hue}, ${saturation}%, ${lightness}%, ${alpha})`;
-      this.ctx.fill();
-
-      // グローエフェクト
-      if (value > 0.5) {
-        this.ctx.shadowColor = `hsla(${hue}, 100%, 60%, 0.4)`;
-        this.ctx.shadowBlur = 8;
-        this.ctx.fill();
+      
+      if (rawVal > 0.4) {
+        this.ctx.fillStyle = '#00f0ff';
+        this.ctx.shadowColor = 'rgba(0, 240, 255, 0.6)';
+        this.ctx.shadowBlur = 6;
+      } else {
+        this.ctx.fillStyle = 'rgba(0, 220, 255, 0.55)';
         this.ctx.shadowBlur = 0;
       }
+      this.ctx.fill();
     }
   }
 
   /**
-   * 待機状態の静かな波形を描画
+   * 待機状態の静かなミニバー
    * @private
    */
   _drawIdle() {
+    if (!this.width || !this.height) this._setupCanvas();
     this.ctx.clearRect(0, 0, this.width, this.height);
 
-    const centerY = this.height / 2;
-    const barWidth = (this.width - this.barGap * (this.barCount - 1)) / this.barCount;
+    const barWidth = Math.max(2, (this.width - this.barGap * (this.barCount - 1)) / this.barCount);
 
     for (let i = 0; i < this.barCount; i++) {
       const x = i * (barWidth + this.barGap);
-      // 微妙な波形を表示
-      const wave = Math.sin((i / this.barCount) * Math.PI * 4 + Date.now() * 0.002) * 0.5 + 0.5;
-      const barHeight = 2 + wave * 4;
-      const y = centerY - barHeight / 2;
+      const barHeight = 2.5;
+      const y = (this.height - barHeight) / 2;
 
       this.ctx.beginPath();
-      this.ctx.roundRect(x, y, barWidth, barHeight, barWidth / 2);
-      this.ctx.fillStyle = 'rgba(124, 77, 255, 0.15)';
+      this.ctx.roundRect(x, y, barWidth, barHeight, 1);
+      this.ctx.fillStyle = 'rgba(0, 220, 255, 0.2)';
       this.ctx.fill();
     }
   }
@@ -165,10 +157,10 @@ class AudioVisualizer {
    * 待機アニメーション（録音していない時）
    */
   startIdleAnimation() {
-    this.isActive = false; // 録音用のアニメーションを停止
+    this.isActive = false;
 
     const drawFrame = () => {
-      if (this.isActive) return; // 録音が始まったら停止
+      if (this.isActive) return;
       this._drawIdle();
       this._idleAnimationId = requestAnimationFrame(drawFrame);
     };

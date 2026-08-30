@@ -38,7 +38,7 @@
     <!-- ===== 録音ビュー ===== -->
     <main id="view-record" class="view record-view active">
 
-      <!-- トップステータスバー（言語・タイマー・波形・文字数） -->
+      <!-- トップステータスバー（言語・音量メーター＆秒数・文字数・文字サイズ） -->
       <div class="live-status-bar" id="live-status-bar">
         <div class="status-left">
           <!-- 言語セレクター -->
@@ -46,15 +46,16 @@
             <button class="lang-btn active" data-lang="ja-JP" id="lang-btn-ja">🇯🇵 JP</button>
             <button class="lang-btn" data-lang="en-US" id="lang-btn-en">🇺🇸 EN</button>
           </div>
-          <!-- ライブ状態バッジ -->
-          <div class="live-badge" id="live-badge">
-            <span class="live-dot"></span>
-            <span class="live-label">STANDBY</span>
-          </div>
         </div>
 
+        <!-- 音量メーター＆秒数（コンパクト横並び） -->
         <div class="status-center">
-          <div class="timer-display compact" id="timer-display">00:00</div>
+          <div class="audio-meter-timer-box" id="audio-meter-timer-box">
+            <div class="mini-meter-wrapper" title="音声入力メーター">
+              <canvas class="visualizer-canvas" id="visualizer-canvas" width="44" height="18"></canvas>
+            </div>
+            <div class="timer-display compact" id="timer-display">00:00</div>
+          </div>
         </div>
 
         <div class="status-right">
@@ -79,53 +80,34 @@
       <div class="transcript-area prominent" id="transcript-area">
         <div class="transcript-header-bar">
           <span class="transcript-title-label">📝 リアルタイム文字起こし</span>
-          <button class="clear-transcript-btn" id="clear-transcript-btn" title="クリア" style="display:none;">クリア</button>
+          <div class="header-bar-actions">
+            <button class="action-pill-btn" id="quick-copy-btn" title="テキストをコピー">📋 コピー</button>
+            <button class="action-pill-btn" id="clear-transcript-btn" title="クリア" style="display:none;">クリア</button>
+          </div>
         </div>
 
-        <!-- リアルタイムテキスト表示部 -->
+        <!-- リアルタイムテキスト表示部（無限追従ストリーム） -->
         <div class="transcript-content-wrapper" id="transcript-content-wrapper">
           <div class="transcript-placeholder prominent" id="transcript-placeholder">
             <div class="placeholder-icon">🎙️</div>
-            <div class="placeholder-main">下の録音ボタンを押して話し始めてください</div>
-            <div class="placeholder-sub">話した言葉がここにリアルタイムでそのまま大きく表示されます</div>
+            <div class="placeholder-main">下のボタンを押して話し始めてください</div>
+            <div class="placeholder-sub">話している言葉がリアルタイムでそのまま大きく文字になります</div>
           </div>
           <div class="transcript-text prominent" id="transcript-text"></div>
         </div>
-
-        <!-- アクティブ発話インジケーター -->
-        <div class="speaking-indicator" id="speaking-indicator">
-          <span class="sound-wave-bar"></span>
-          <span class="sound-wave-bar"></span>
-          <span class="sound-wave-bar"></span>
-          <span class="speaking-text">音声を聞き取り中...</span>
-        </div>
       </div>
 
-      <!-- 下部コントロールデッキ（波形ミニバー + 録音ボタン + 操作） -->
+      <!-- 下部コントロールデッキ（コンパクト＆洗練されたシアンブルー操作バー） -->
       <div class="bottom-control-deck" id="bottom-control-deck">
-        <!-- ミニ波形ビジュアライザー -->
-        <div class="visualizer-container compact" id="visualizer-container">
-          <canvas class="visualizer-canvas" id="visualizer-canvas"></canvas>
-        </div>
-
-        <!-- アクションボタンエリア -->
         <div class="deck-actions">
           <!-- 一時停止ボタン -->
-          <button class="control-btn mini" id="pause-btn" aria-label="一時停止/再開" style="visibility:hidden;">⏸️</button>
+          <button class="control-btn mini" id="pause-btn" aria-label="一時停止/再開" style="display:none;">⏸️</button>
 
-          <!-- メイン録音ボタン -->
-          <div class="record-btn-wrapper prominent" id="record-btn-wrapper">
-            <div class="pulse-ring"></div>
-            <div class="pulse-ring"></div>
-            <div class="pulse-ring"></div>
-            <button class="record-btn prominent" id="record-btn" aria-label="録音開始/停止">
-              <span class="btn-icon-mic">🎙️</span>
-              <span class="btn-icon-stop">⏹️</span>
-            </button>
-          </div>
-
-          <!-- コピーボタン -->
-          <button class="control-btn mini" id="quick-copy-btn" aria-label="テキストをコピー" title="テキストをコピー">📋</button>
+          <!-- メイン録音ボタン（スマートカプセル型） -->
+          <button class="record-pill-btn" id="record-btn" aria-label="録音開始/停止">
+            <span class="record-btn-dot"></span>
+            <span class="record-btn-text" id="record-btn-text">録音開始</span>
+          </button>
         </div>
       </div>
     </main>

@@ -138,37 +138,38 @@ class UIManager {
   }
 
   /**
-   * 録音ステータスバッジを更新
+   * 録音ステータスを更新
    * @param {'standby'|'recording'|'paused'} state
    */
   setRecordingStatus(state) {
-    const badge = document.getElementById('live-badge');
-    const label = badge ? badge.querySelector('.live-label') : null;
+    const recordBtn = document.getElementById('record-btn');
+    const btnText = document.getElementById('record-btn-text');
     const pauseBtn = document.getElementById('pause-btn');
-
-    if (!badge || !label) return;
-
-    badge.className = 'live-badge';
+    const timerEl = document.getElementById('timer-display');
 
     if (state === 'recording') {
-      badge.classList.add('recording');
-      label.textContent = 'REC LIVE';
+      if (recordBtn) recordBtn.classList.add('recording');
+      if (btnText) btnText.textContent = '録音停止';
       if (pauseBtn) {
-        pauseBtn.style.visibility = 'visible';
+        pauseBtn.style.display = 'inline-flex';
         pauseBtn.textContent = '⏸️';
       }
+      if (timerEl) timerEl.classList.add('recording');
     } else if (state === 'paused') {
-      badge.classList.add('paused');
-      label.textContent = 'PAUSED';
+      if (recordBtn) recordBtn.classList.add('recording');
+      if (btnText) btnText.textContent = '録音停止';
       if (pauseBtn) {
-        pauseBtn.style.visibility = 'visible';
+        pauseBtn.style.display = 'inline-flex';
         pauseBtn.textContent = '▶️';
       }
+      if (timerEl) timerEl.classList.remove('recording');
     } else {
-      label.textContent = 'STANDBY';
+      if (recordBtn) recordBtn.classList.remove('recording');
+      if (btnText) btnText.textContent = '録音開始';
       if (pauseBtn) {
-        pauseBtn.style.visibility = 'hidden';
+        pauseBtn.style.display = 'none';
       }
+      if (timerEl) timerEl.classList.remove('recording');
     }
   }
 
@@ -222,7 +223,7 @@ class UIManager {
   }
 
   /**
-   * 文字起こしテキストを更新（録音画面）
+   * 文字起こしテキストを更新（常に最新の発話行へスムーズスクロール）
    * @param {string} finalText - 確定テキスト
    * @param {string} interimText - 暫定テキスト（今まさに発話中の言葉）
    * @param {boolean} isRecording - 録音中かどうか
@@ -231,7 +232,6 @@ class UIManager {
     const textEl = document.getElementById('transcript-text');
     const placeholderEl = document.getElementById('transcript-placeholder');
     const charCountEl = document.getElementById('char-count');
-    const speakingIndicator = document.getElementById('speaking-indicator');
     const clearBtn = document.getElementById('clear-transcript-btn');
 
     if (!textEl) return;
@@ -251,7 +251,6 @@ class UIManager {
     if (!finalText && !interimText) {
       if (placeholderEl) placeholderEl.style.display = 'block';
       textEl.innerHTML = '';
-      if (speakingIndicator) speakingIndicator.classList.remove('visible');
       return;
     }
 
@@ -263,11 +262,8 @@ class UIManager {
     }
 
     if (interimText) {
-      // 発話中の言葉はシアンバブルで光らせて表示
+      // 発話中の言葉は鮮やかなシアンアンダーラインで強調
       html += `<span class="interim">${UIManager.escapeHtml(interimText)}</span>`;
-      if (speakingIndicator) speakingIndicator.classList.add('visible');
-    } else {
-      if (speakingIndicator) speakingIndicator.classList.remove('visible');
     }
 
     // 録音中なら末尾に点滅するライブカーソルを配置
@@ -277,10 +273,13 @@ class UIManager {
 
     textEl.innerHTML = html;
 
-    // 自動スムーズスクロール（最新の言葉に追従）
+    // 常に最新の発話（末尾）が見えるように自動スクロール
     const wrapper = document.getElementById('transcript-content-wrapper');
     if (wrapper) {
-      wrapper.scrollTop = wrapper.scrollHeight;
+      wrapper.scrollTo({
+        top: wrapper.scrollHeight,
+        behavior: 'smooth'
+      });
     }
   }
 

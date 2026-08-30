@@ -151,14 +151,6 @@ class VoiceScribeApp {
       this.currentRecordingId = StorageManager.generateId();
 
       // UI更新
-      const recordBtn = document.getElementById('record-btn');
-      const btnWrapper = document.getElementById('record-btn-wrapper');
-      const timerEl = document.getElementById('timer-display');
-
-      if (recordBtn) recordBtn.classList.add('recording');
-      if (btnWrapper) btnWrapper.classList.add('recording');
-      if (timerEl) timerEl.classList.add('recording');
-
       this.ui.setRecordingStatus('recording');
 
       // 言語選択を無効化
@@ -224,14 +216,6 @@ class VoiceScribeApp {
       this._stopTimer();
 
       // UI更新
-      const recordBtn = document.getElementById('record-btn');
-      const btnWrapper = document.getElementById('record-btn-wrapper');
-      const timerEl = document.getElementById('timer-display');
-
-      if (recordBtn) recordBtn.classList.remove('recording');
-      if (btnWrapper) btnWrapper.classList.remove('recording');
-      if (timerEl) timerEl.classList.remove('recording');
-
       this.ui.setRecordingStatus('standby');
 
       // 言語選択を再有効化
