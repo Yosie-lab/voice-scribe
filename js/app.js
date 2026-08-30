@@ -1,6 +1,6 @@
 /**
- * VoiceScribe — メインアプリケーション
- * 各モジュールを統合し、アプリ全体のフローを制御
+ * VoiceScribe — メインアプリケーションコントローラー
+ * 各モジュール（Storage, Recorder, Transcriber, Visualizer, UI）を統合管理
  */
 
 class VoiceScribeApp {
@@ -11,12 +11,13 @@ class VoiceScribeApp {
     this.ui = null;
     this.visualizer = null;
 
-    // アプリ状態
+    // アプリケーション状態
     this.isRecording = false;
     this.currentRecordingId = null;
     this.currentDetailId = null;
     this.timerInterval = null;
-    this.currentAudio = null; // 再生中のAudioオブジェクト
+    this.currentAudio = null;
+    this.currentAudioUrl = null;
     this.playbackInterval = null;
   }
 
@@ -39,25 +40,25 @@ class VoiceScribeApp {
         this.visualizer.startIdleAnimation();
       }
 
-      // 各種イベントリスナーの設定
+      // 各画面のイベントリスナー設定
       this._setupRecordView();
       this._setupListView();
       this._setupDetailView();
 
-      // 文字起こし機能の利用可能性を確認
+      // 音声認識対応状況の確認
       this._checkTranscriptionSupport();
 
-      // 録音一覧を初期読み込み
+      // 録音一覧の初回読み込み
       await this._refreshRecordingsList();
 
       console.log('VoiceScribe 初期化完了');
     } catch (error) {
-      console.error('初期化エラー:', error);
+      console.error('VoiceScribe 初期化エラー:', error);
     }
   }
 
   /**
-   * 文字起こし機能のサポート状況を確認してUIに反映
+   * 文字起こし機能の対応状況を確認
    * @private
    */
   _checkTranscriptionSupport() {
@@ -72,15 +73,15 @@ class VoiceScribeApp {
   }
 
   // =====================================
-  // 録音ビュー
+  // 録音ビューの制御
   // =====================================
 
   /**
-   * 録音ビューのイベントリスナーを設定
+   * 録音画面のイベントリスナーを設定
    * @private
    */
   _setupRecordView() {
-    // 録音ボタン
+    // 録音開始/停止ボタン
     const recordBtn = document.getElementById('record-btn');
     if (recordBtn) {
       recordBtn.addEventListener('click', () => this._toggleRecording());
@@ -90,7 +91,7 @@ class VoiceScribeApp {
     const langBtns = document.querySelectorAll('.lang-btn');
     langBtns.forEach((btn) => {
       btn.addEventListener('click', () => {
-        if (this.isRecording) return; // 録音中は変更不可
+        if (this.isRecording) return;
         langBtns.forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
         const lang = btn.dataset.lang;
@@ -133,7 +134,7 @@ class VoiceScribeApp {
   }
 
   /**
-   * 録音を開始（iOS Safari同期起動＆完全フェイルセーフ設計）
+   * 録音を開始（iOS Safari同期起動＆完全フェイルセーフ）
    * @private
    */
   async _startRecording() {
@@ -143,13 +144,13 @@ class VoiceScribeApp {
     this._startTimer();
     this.ui.updateTranscript('', '', true);
 
-    // プレースホルダーを即座に非表示
+    // プレースホルダーを非表示
     const placeholderEl = document.getElementById('transcript-placeholder');
     if (placeholderEl) {
       placeholderEl.style.display = 'none';
     }
 
-    // 1. 文字起こしエンジンをタップ直後に同期起動（iOS Safari必須）
+    // 1. 文字起こしエンジンを同期起動（iOS Safari必須）
     this.transcriber.onResult = (finalText, interimText) => {
       this.ui.updateTranscript(finalText, interimText, true);
     };
@@ -160,7 +161,7 @@ class VoiceScribeApp {
       console.warn('SpeechRecognition start warning:', e);
     }
 
-    // 2. 音声録音（MediaRecorder）を起動（失敗しても文字起こしは継続）
+    // 2. 音声録音（MediaRecorder）を起動（失敗時も文字起こしは継続）
     try {
       const stream = await this.recorder.start();
       if (this.visualizer && stream) {
@@ -168,10 +169,10 @@ class VoiceScribeApp {
         await this.visualizer.connectStream(stream);
       }
     } catch (recErr) {
-      console.warn('MediaRecorder warning (文字起こし単独で継続):', recErr);
+      console.warn('MediaRecorder start warning:', recErr);
     }
 
-    // 言語ボタンの一時無効化
+    // 言語ボタンを一時無効化
     document.querySelectorAll('.lang-btn').forEach((btn) => {
       btn.style.pointerEvents = 'none';
       btn.style.opacity = '0.5';
@@ -200,7 +201,7 @@ class VoiceScribeApp {
       // 文字起こし停止
       this.transcriber.stop();
 
-      // 録音停止
+      // 音声録音停止
       let audioBlob = null;
       let audioMime = 'audio/mp4';
       try {
@@ -222,14 +223,14 @@ class VoiceScribeApp {
           this.visualizer.disconnect();
           this.visualizer.startIdleAnimation();
         } catch (e) {
-          console.warn('Visualizer stop warning:', e);
+          console.warn('Visualizer disconnect warning:', e);
         }
       }
 
       // UI更新
       this.ui.setRecordingStatus('standby');
 
-      // 言語選択を再有効化
+      // 言語選択ボタンを再有効化
       document.querySelectorAll('.lang-btn').forEach((btn) => {
         btn.style.pointerEvents = '';
         btn.style.opacity = '';
@@ -272,22 +273,35 @@ class VoiceScribeApp {
    * 一時停止/再開を切り替え
    * @private
    */
-  _togglePause() {
+  async _togglePause() {
     if (!this.isRecording) return;
 
-    if (this.recorder.isPaused) {
-      this.recorder.resume();
-      this.ui.setRecordingStatus('recording');
-      this.ui.showToast('▶️ 録音を再開しました', 'info');
-    } else {
+    const pauseBtn = document.getElementById('pause-btn');
+
+    if (this.recorder.state === 'recording') {
       this.recorder.pause();
+      this.transcriber.stop();
+      this._stopTimer();
       this.ui.setRecordingStatus('paused');
-      this.ui.showToast('⏸️ 録音を一時停止しました', 'info');
+      if (pauseBtn) pauseBtn.textContent = '▶️';
+      if (this.visualizer) this.visualizer.startIdleAnimation();
+      this.ui.showToast('録音を一時停止しました', 'info');
+    } else if (this.recorder.state === 'paused') {
+      this.recorder.resume();
+      this.transcriber.start();
+      this._startTimer();
+      this.ui.setRecordingStatus('recording');
+      if (pauseBtn) pauseBtn.textContent = '⏸️';
+      if (this.visualizer && this.recorder.stream) {
+        this.visualizer.stopIdleAnimation();
+        await this.visualizer.connectStream(this.recorder.stream);
+      }
+      this.ui.showToast('録音を再開しました', 'info');
     }
   }
 
   /**
-   * タイマーを開始
+   * 録音タイマーを開始
    * @private
    */
   _startTimer() {
@@ -295,11 +309,11 @@ class VoiceScribeApp {
     this.timerInterval = setInterval(() => {
       const elapsed = this.recorder.getElapsedTime();
       this.ui.updateTimer(elapsed);
-    }, 200);
+    }, 500);
   }
 
   /**
-   * タイマーを停止
+   * 録音タイマーを停止
    * @private
    */
   _stopTimer() {
@@ -311,9 +325,10 @@ class VoiceScribeApp {
 
   /**
    * 録音タイトルを自動生成
-   * @param {string} transcript - 文字起こしテキスト
-   * @param {string} language - 言語コード
+   * @param {string} transcript
+   * @param {string} language
    * @returns {string}
+   * @private
    */
   _generateTitle(transcript, language) {
     const now = new Date();
@@ -325,9 +340,9 @@ class VoiceScribeApp {
     });
 
     if (transcript && transcript.length > 0) {
-      const firstLine = transcript.split(/[。\.\n]/)[0].trim();
+      const firstLine = transcript.split(/[。\.\n！？\!\?]/)[0].trim();
       if (firstLine.length > 0) {
-        return firstLine.substring(0, 30) + (firstLine.length > 30 ? '...' : '');
+        return firstLine.substring(0, 25) + (firstLine.length > 25 ? '...' : '');
       }
     }
 
@@ -335,7 +350,7 @@ class VoiceScribeApp {
   }
 
   // =====================================
-  // 一覧ビュー
+  // 一覧ビューの制御
   // =====================================
 
   /**
@@ -343,7 +358,7 @@ class VoiceScribeApp {
    * @private
    */
   _setupListView() {
-    // 検索入力
+    // 検索入力（デバウンス付き）
     const searchInput = document.getElementById('search-input');
     if (searchInput) {
       let debounceTimer;
@@ -353,21 +368,21 @@ class VoiceScribeApp {
           const query = searchInput.value;
           const results = await this.storage.search(query);
           this.ui.renderRecordingsList(results, this._getListCallbacks());
-        }, 300);
+        }, 250);
       });
     }
 
-    // 一覧タブに切り替えた時にリフレッシュ
-    const listNavItem = document.querySelector('[data-view="list"]');
-    if (listNavItem) {
-      listNavItem.addEventListener('click', () => {
+    // タブ切替時に自動リフレッシュ
+    const listNavItems = document.querySelectorAll('[data-view="list"]');
+    listNavItems.forEach((item) => {
+      item.addEventListener('click', () => {
         this._refreshRecordingsList();
       });
-    }
+    });
   }
 
   /**
-   * 録音一覧をリフレッシュ
+   * 録音一覧を最新状態に更新
    * @private
    */
   async _refreshRecordingsList() {
@@ -380,9 +395,9 @@ class VoiceScribeApp {
   }
 
   /**
-   * 一覧のコールバックを取得
-   * @private
+   * 一覧操作用コールバックオブジェクトを取得
    * @returns {Object}
+   * @private
    */
   _getListCallbacks() {
     return {
@@ -393,14 +408,14 @@ class VoiceScribeApp {
 
   /**
    * 削除確認ダイアログを表示
-   * @param {string} id - 録音ID
+   * @param {string} id
    * @private
    */
   _confirmDelete(id) {
     this.ui.showConfirmModal({
       icon: '🗑️',
       title: '録音を削除しますか？',
-      description: 'この操作は取り消せません。録音データと文字起こしテキストが完全に削除されます。',
+      description: 'この操作は取り消せません。音声データと文字起こしテキストが完全に削除されます。',
       confirmText: '削除する',
       onConfirm: async () => {
         try {
@@ -408,7 +423,6 @@ class VoiceScribeApp {
           await this._refreshRecordingsList();
           this.ui.showToast('録音を削除しました', 'success');
 
-          // 詳細ビューで開いていた場合は一覧に戻る
           if (this.currentDetailId === id) {
             this.ui.switchView('list');
           }
@@ -421,7 +435,7 @@ class VoiceScribeApp {
   }
 
   // =====================================
-  // 詳細ビュー
+  // 詳細ビューの制御
   // =====================================
 
   /**
@@ -444,7 +458,7 @@ class VoiceScribeApp {
       playBtn.addEventListener('click', () => this._togglePlayback());
     }
 
-    // スキップボタン
+    // 10秒スキップボタン
     const skipBackBtn = document.getElementById('skip-back-btn');
     const skipFwdBtn = document.getElementById('skip-fwd-btn');
     if (skipBackBtn) {
@@ -454,25 +468,25 @@ class VoiceScribeApp {
       skipFwdBtn.addEventListener('click', () => this._skipPlayback(10));
     }
 
-    // プログレスバー
+    // シークバー（プログレスバー）
     const progressBar = document.getElementById('player-progress');
     if (progressBar) {
       progressBar.addEventListener('click', (e) => this._seekPlayback(e));
     }
 
-    // テキストコピー
+    // テキストコピーボタン
     const detailCopyBtn = document.getElementById('detail-copy-btn');
     if (detailCopyBtn) {
       detailCopyBtn.addEventListener('click', () => this._copyDetailText());
     }
 
-    // テキストダウンロード
+    // テキストダウンロードボタン
     const exportTextBtn = document.getElementById('export-text-btn');
     if (exportTextBtn) {
       exportTextBtn.addEventListener('click', () => this._exportText());
     }
 
-    // 音声ダウンロード
+    // 音声ダウンロードボタン
     const exportAudioBtn = document.getElementById('export-audio-btn');
     if (exportAudioBtn) {
       exportAudioBtn.addEventListener('click', () => this._exportAudio());
@@ -481,7 +495,7 @@ class VoiceScribeApp {
 
   /**
    * 詳細ビューを開く
-   * @param {string} id - 録音ID
+   * @param {string} id
    * @private
    */
   async _openDetail(id) {
@@ -495,16 +509,16 @@ class VoiceScribeApp {
       this.currentDetailId = id;
       this._stopPlayback();
 
-      // UIに表示
+      // UI描画
       this.ui.showDetail(recording);
 
-      // 波形を描画
+      // 静的波形の描画
       const waveformCanvas = document.getElementById('player-waveform-canvas');
       if (waveformCanvas && recording.audioBlob) {
         AudioVisualizer.drawStaticWaveform(recording.audioBlob, waveformCanvas);
       }
 
-      // プレイヤーの時間をリセット
+      // 再生時間表示のリセット
       const currentTimeEl = document.getElementById('player-current-time');
       const totalTimeEl = document.getElementById('player-total-time');
       const progressFill = document.getElementById('player-progress-fill');
@@ -542,10 +556,14 @@ class VoiceScribeApp {
     // 新規再生
     try {
       const recording = await this.storage.getById(this.currentDetailId);
-      if (!recording || !recording.audioBlob) return;
+      if (!recording || !recording.audioBlob) {
+        this.ui.showToast('再生できる音声データがありません。', 'info');
+        return;
+      }
 
-      const url = URL.createObjectURL(recording.audioBlob);
-      this.currentAudio = new Audio(url);
+      this._cleanupAudioUrl();
+      this.currentAudioUrl = URL.createObjectURL(recording.audioBlob);
+      this.currentAudio = new Audio(this.currentAudioUrl);
 
       this.currentAudio.onended = () => {
         if (playBtn) playBtn.textContent = '▶️';
@@ -569,7 +587,7 @@ class VoiceScribeApp {
   }
 
   /**
-   * 再生時間を更新するタイマーを開始
+   * 再生タイマーを開始
    * @private
    */
   _startPlaybackTimer() {
@@ -611,6 +629,7 @@ class VoiceScribeApp {
       this.currentAudio.pause();
       this.currentAudio = null;
     }
+    this._cleanupAudioUrl();
     this._stopPlaybackTimer();
 
     const playBtn = document.getElementById('play-btn');
@@ -618,21 +637,32 @@ class VoiceScribeApp {
   }
 
   /**
+   * オーディオBlobのURLを解放（メモリリーク防止）
+   * @private
+   */
+  _cleanupAudioUrl() {
+    if (this.currentAudioUrl) {
+      URL.revokeObjectURL(this.currentAudioUrl);
+      this.currentAudioUrl = null;
+    }
+  }
+
+  /**
    * 再生位置をスキップ
-   * @param {number} seconds - スキップ秒数（正: 前進, 負: 後退）
+   * @param {number} seconds
    * @private
    */
   _skipPlayback(seconds) {
     if (this.currentAudio) {
       this.currentAudio.currentTime = Math.max(
         0,
-        Math.min(this.currentAudio.duration, this.currentAudio.currentTime + seconds)
+        Math.min(this.currentAudio.duration || 0, this.currentAudio.currentTime + seconds)
       );
     }
   }
 
   /**
-   * プログレスバーをクリックして再生位置を変更
+   * シークバーをクリックして再生位置を変更
    * @param {MouseEvent} event
    * @private
    */
@@ -642,13 +672,13 @@ class VoiceScribeApp {
     const bar = event.currentTarget;
     const rect = bar.getBoundingClientRect();
     const x = event.clientX - rect.left;
-    const ratio = x / rect.width;
+    const ratio = Math.max(0, Math.min(1, x / rect.width));
 
     this.currentAudio.currentTime = ratio * this.currentAudio.duration;
   }
 
   /**
-   * 詳細画面の文字起こしテキストをクリップボードにコピー
+   * 詳細画面のテキストをクリップボードにコピー
    * @private
    */
   async _copyDetailText() {
@@ -661,40 +691,27 @@ class VoiceScribeApp {
         return;
       }
 
-      await navigator.clipboard.writeText(text);
-      this.ui.showToast('📋 全文テキストをコピーしました', 'success');
-    } catch (err) {
-      console.warn('クリップボードコピー失敗、フォールバック試行:', err);
-      // フォールバック（execCommand）
-      try {
-        const textEl = document.getElementById('detail-transcript-text');
-        if (textEl) {
-          const range = document.createRange();
-          range.selectNodeContents(textEl);
-          const selection = window.getSelection();
-          selection.removeAllRanges();
-          selection.addRange(range);
-          document.execCommand('copy');
-          selection.removeAllRanges();
-          this.ui.showToast('📋 全文テキストをコピーしました', 'success');
-          return;
-        }
-      } catch (fallbackErr) {
-        console.error('コピー失敗:', fallbackErr);
+      const success = await UIManager.copyToClipboard(text);
+      if (success) {
+        this.ui.showToast('📋 全文テキストをコピーしました', 'success');
+      } else {
+        this.ui.showToast('コピーに失敗しました。長押しで選択してください。', 'error');
       }
-      this.ui.showToast('コピーに失敗しました。長押しで選択してください。', 'error');
+    } catch (err) {
+      console.error('テキストコピーエラー:', err);
+      this.ui.showToast('コピー中にエラーが発生しました。', 'error');
     }
   }
 
   /**
-   * テキストをエクスポート
+   * テキストファイルをエクスポート
    * @private
    */
   async _exportText() {
     try {
       const recording = await this.storage.getById(this.currentDetailId);
       if (!recording || !recording.transcript) {
-        this.ui.showToast('エクスポートするテキストがありません。', 'error');
+        this.ui.showToast('エクスポートするテキストがありません。', 'info');
         return;
       }
 
@@ -716,29 +733,22 @@ class VoiceScribeApp {
   }
 
   /**
-   * 音声をエクスポート
+   * 音声ファイルをエクスポート
    * @private
    */
   async _exportAudio() {
     try {
       const recording = await this.storage.getById(this.currentDetailId);
       if (!recording || !recording.audioBlob) {
-        this.ui.showToast('エクスポートする音声がありません。', 'error');
+        this.ui.showToast('エクスポートする音声データがありません。', 'info');
         return;
       }
 
-      // MIMEタイプから拡張子を推定
-      let ext = 'webm';
-      if (recording.mimeType) {
-        if (recording.mimeType.includes('mp4')) ext = 'mp4';
-        else if (recording.mimeType.includes('ogg')) ext = 'ogg';
-        else if (recording.mimeType.includes('wav')) ext = 'wav';
-      }
-
+      const ext = recording.mimeType && recording.mimeType.includes('webm') ? 'webm' : 'mp4';
       const url = URL.createObjectURL(recording.audioBlob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${recording.title || '録音'}.${ext}`;
+      a.download = `${recording.title || '録音'}_音声.${ext}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -759,11 +769,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   const app = new VoiceScribeApp();
   await app.init();
 
-  // Service Worker登録
+  // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
       const registration = await navigator.serviceWorker.register('./sw.js');
       console.log('Service Worker 登録完了:', registration.scope);
+      if (registration.update) {
+        registration.update();
+      }
     } catch (error) {
       console.warn('Service Worker 登録失敗:', error);
     }

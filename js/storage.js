@@ -1,6 +1,6 @@
 /**
- * VoiceScribe — IndexedDBストレージ管理
- * 録音データ（Blob）とメタデータの永続化を担当
+ * VoiceScribe — IndexedDBストレージ管理モジュール (StorageManager)
+ * 録音データ（Blob）およびメタデータの永続化・検索・削除を担当
  */
 
 const DB_NAME = 'VoiceScribeDB';
@@ -24,9 +24,7 @@ class StorageManager {
         const db = event.target.result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-          // 日時でソートするためのインデックス
           store.createIndex('createdAt', 'createdAt', { unique: false });
-          // 検索用テキストインデックス
           store.createIndex('transcript', 'transcript', { unique: false });
         }
       };
@@ -38,7 +36,7 @@ class StorageManager {
       };
 
       request.onerror = (event) => {
-        console.error('IndexedDB エラー:', event.target.error);
+        console.error('IndexedDB 初期化エラー:', event.target.error);
         reject(event.target.error);
       };
     });
@@ -46,94 +44,99 @@ class StorageManager {
 
   /**
    * 録音データを保存
-   * @param {Object} recording - 録音データオブジェクト
-   * @param {string} recording.id - ユニークID
-   * @param {Blob} recording.audioBlob - 録音された音声データ
-   * @param {string} recording.mimeType - 音声のMIMEタイプ
-   * @param {string} recording.transcript - 文字起こしテキスト
-   * @param {string} recording.language - 録音時の言語
-   * @param {number} recording.duration - 録音時間（秒）
-   * @param {number} recording.createdAt - 作成日時（タイムスタンプ）
+   * @param {Object} recording
+   * @param {string} recording.id
+   * @param {Blob|null} recording.audioBlob
+   * @param {string} recording.mimeType
+   * @param {string} recording.transcript
+   * @param {string} recording.language
+   * @param {number} recording.duration
+   * @param {number} recording.createdAt
    * @returns {Promise<void>}
    */
   async save(recording) {
     return new Promise((resolve, reject) => {
+      if (!this.db) {
+        reject(new Error('データベースが初期化されていません'));
+        return;
+      }
+
       const tx = this.db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
       const request = store.put(recording);
 
       request.onsuccess = () => resolve();
       request.onerror = (event) => {
-        console.error('保存エラー:', event.target.error);
+        console.error('データ保存エラー:', event.target.error);
         reject(event.target.error);
       };
     });
   }
 
   /**
-   * 全録音データを取得（新しい順にソート）
+   * 全録音データを取得（新しい順）
    * @returns {Promise<Array>}
    */
   async getAll() {
     return new Promise((resolve, reject) => {
+      if (!this.db) {
+        resolve([]);
+        return;
+      }
+
       const tx = this.db.transaction(STORE_NAME, 'readonly');
       const store = tx.objectStore(STORE_NAME);
       const index = store.index('createdAt');
       const request = index.getAll();
 
       request.onsuccess = (event) => {
-        // 新しい順にソート
-        const results = event.target.result.reverse();
+        const results = (event.target.result || []).reverse();
         resolve(results);
       };
 
       request.onerror = (event) => {
-        console.error('取得エラー:', event.target.error);
+        console.error('データ取得エラー:', event.target.error);
         reject(event.target.error);
       };
     });
   }
 
   /**
-   * 指定IDの録音データを取得
-   * @param {string} id - 録音ID
+   * ID指定で録音データを取得
+   * @param {string} id
    * @returns {Promise<Object|null>}
    */
   async getById(id) {
     return new Promise((resolve, reject) => {
+      if (!this.db) {
+        resolve(null);
+        return;
+      }
+
       const tx = this.db.transaction(STORE_NAME, 'readonly');
       const store = tx.objectStore(STORE_NAME);
       const request = store.get(id);
 
       request.onsuccess = (event) => resolve(event.target.result || null);
       request.onerror = (event) => {
-        console.error('取得エラー:', event.target.error);
+        console.error('ID取得エラー:', event.target.error);
         reject(event.target.error);
       };
     });
   }
 
   /**
-   * 録音データを更新（文字起こしテキストの編集など）
-   * @param {string} id - 録音ID
-   * @param {Object} updates - 更新するフィールド
-   * @returns {Promise<void>}
-   */
-  async update(id, updates) {
-    const recording = await this.getById(id);
-    if (!recording) throw new Error(`録音データが見つかりません: ${id}`);
-
-    const updated = { ...recording, ...updates };
-    return this.save(updated);
-  }
-
-  /**
    * 録音データを削除
-   * @param {string} id - 録音ID
+   * @param {string} id
    * @returns {Promise<void>}
    */
   async delete(id) {
     return new Promise((resolve, reject) => {
+      if (!this.db) {
+        reject(new Error('データベースが初期化されていません'));
+        return;
+      }
+
       const tx = this.db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
       const request = store.delete(id);
@@ -147,20 +150,19 @@ class StorageManager {
   }
 
   /**
-   * テキスト検索（文字起こしテキストの部分一致）
-   * @param {string} query - 検索クエリ
+   * キーワードで検索
+   * @param {string} query
    * @returns {Promise<Array>}
    */
   async search(query) {
     const all = await this.getAll();
-    if (!query || query.trim() === '') return all;
+    if (!query || !query.trim()) return all;
 
-    const lowerQuery = query.toLowerCase();
-    return all.filter((recording) => {
-      return (
-        (recording.transcript && recording.transcript.toLowerCase().includes(lowerQuery)) ||
-        (recording.title && recording.title.toLowerCase().includes(lowerQuery))
-      );
+    const lowerQuery = query.toLowerCase().trim();
+    return all.filter((rec) => {
+      const titleMatch = rec.title && rec.title.toLowerCase().includes(lowerQuery);
+      const transcriptMatch = rec.transcript && rec.transcript.toLowerCase().includes(lowerQuery);
+      return titleMatch || transcriptMatch;
     });
   }
 

@@ -1,32 +1,32 @@
 /**
- * VoiceScribe — UI制御
- * DOM操作、イベントリスナー、画面遷移、通知を管理
+ * VoiceScribe — UI制御モジュール (UIManager)
+ * DOM操作、イベントリスナー、画面遷移、トースト通知、モーダル管理を担当
  */
 
 class UIManager {
   constructor() {
-    // ビューの参照
+    // 各ビューのDOM参照
     this.views = {
       record: document.getElementById('view-record'),
       list: document.getElementById('view-list'),
       detail: document.getElementById('view-detail')
     };
 
-    // ナビゲーションボタン
+    // ナビゲーションアイテム（下部タブおよびヘッダータブ対応）
     this.navItems = document.querySelectorAll('.nav-tab-btn, .nav-item');
 
-    // 現在のビュー
+    // 現在のアクティブビュー
     this.currentView = 'record';
 
-    // トーストコンテナ
+    // トースト通知コンテナ
     this.toastContainer = document.getElementById('toast-container');
 
-    // モーダル
+    // 確認モーダル
     this.modalOverlay = document.getElementById('modal-overlay');
 
     // フォントサイズ段階（sm, md, lg, xl）
     this.fontSizes = ['sm', 'md', 'lg', 'xl'];
-    this.currentFontIndex = 1; // デフォルト: md (1.25rem)
+    this.currentFontIndex = 1; // デフォルト: md
 
     this._initFontControls();
     this._initQuickCopy();
@@ -39,7 +39,6 @@ class UIManager {
   _initFontControls() {
     const decBtn = document.getElementById('font-decrease-btn');
     const incBtn = document.getElementById('font-increase-btn');
-    const textEl = document.getElementById('transcript-text');
 
     if (decBtn) {
       decBtn.addEventListener('click', () => {
@@ -75,7 +74,7 @@ class UIManager {
   }
 
   /**
-   * ワンタップコピーボタンの初期化
+   * 録音画面のクイックコピーボタンの初期化
    * @private
    */
   _initQuickCopy() {
@@ -91,12 +90,8 @@ class UIManager {
         return;
       }
 
-      try {
-        await navigator.clipboard.writeText(text);
-        this.showToast('📋 テキストをクリップボードにコピーしました', 'success');
-      } catch {
-        this.showToast('コピーに失敗しました', 'error');
-      }
+      await UIManager.copyToClipboard(text);
+      this.showToast('📋 テキストをクリップボードにコピーしました', 'success');
     });
   }
 
@@ -116,20 +111,20 @@ class UIManager {
 
   /**
    * ビューを切り替え
-   * @param {string} viewName - 'record' | 'list' | 'detail'
+   * @param {'record'|'list'|'detail'} viewName
    */
   switchView(viewName) {
-    // 前のビューを非アクティブに
+    // 前のビューを非アクティブ化
     Object.values(this.views).forEach((view) => {
       if (view) view.classList.remove('active');
     });
 
-    // ナビゲーションのアクティブ状態を更新
+    // ナビゲーションボタンのアクティブ状態を更新
     this.navItems.forEach((item) => {
       item.classList.toggle('active', item.dataset.view === viewName);
     });
 
-    // 新しいビューをアクティブに
+    // 新しいビューをアクティブ化
     if (this.views[viewName]) {
       this.views[viewName].classList.add('active');
     }
@@ -138,7 +133,7 @@ class UIManager {
   }
 
   /**
-   * 録音ステータスを更新
+   * 録音ステータスUIを更新
    * @param {'standby'|'recording'|'paused'} state
    */
   setRecordingStatus(state) {
@@ -174,7 +169,7 @@ class UIManager {
   }
 
   /**
-   * 文字起こしテキストを更新（リアルタイム描画）
+   * 文字起こしテキストをリアルタイム描画
    * @param {string} finalText - 確定テキスト
    * @param {string} interimText - 暫定テキスト（発話中の言葉）
    * @param {boolean} isRecording - 録音中かどうか
@@ -200,6 +195,7 @@ class UIManager {
       clearBtn.style.display = totalText.length > 0 && !isRecording ? 'inline-flex' : 'none';
     }
 
+    // 空状態のハンドリング
     if (!finalText && !interimText) {
       if (placeholderEl) placeholderEl.style.display = isRecording ? 'none' : 'block';
       textEl.innerHTML = isRecording ? '<span class="transcript-cursor"></span>' : '';
@@ -208,6 +204,7 @@ class UIManager {
 
     if (placeholderEl) placeholderEl.style.display = 'none';
 
+    // HTML構築（XSS対策エスケープ済み）
     let html = '';
     if (finalText) {
       html += `<span class="final">${UIManager.escapeHtml(finalText)}</span>`;
@@ -221,7 +218,7 @@ class UIManager {
 
     textEl.innerHTML = html;
 
-    // 自動スクロール（最新の言葉に追従）
+    // 自動スクロール（最新の発話にスムーズ追従）
     if (wrapper) {
       wrapper.scrollTop = wrapper.scrollHeight;
     }
@@ -244,13 +241,14 @@ class UIManager {
    * @returns {string}
    */
   static formatTime(totalSeconds) {
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = Math.floor(totalSeconds % 60);
+    const safeSec = Math.max(0, Math.floor(totalSeconds || 0));
+    const minutes = Math.floor(safeSec / 60);
+    const seconds = safeSec % 60;
     return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   }
 
   /**
-   * 日時をフォーマット（見分けやすい詳細フォーマット）
+   * 日時を日本語形式でフォーマット
    * @param {number} timestamp
    * @returns {string}
    */
@@ -272,19 +270,17 @@ class UIManager {
     if (isToday) return `今日 ${time} (${month}/${day})`;
     if (isYesterday) return `昨日 ${time} (${month}/${day})`;
 
-    // 同じ年なら月日+曜日+時間
     if (date.getFullYear() === now.getFullYear()) {
       return `${month}/${day}(${weekday}) ${time}`;
     }
 
-    // 異なる年なら年月日+時間
     return `${date.getFullYear()}/${month}/${day} ${time}`;
   }
 
   /**
-   * 録音カード一覧を描画
-   * @param {Array} recordings - 録音データの配列
-   * @param {Object} callbacks - {onPlay, onDelete, onDetail}
+   * 録音一覧を描画（2行コンパクト表示）
+   * @param {Array} recordings - 録音データ一覧
+   * @param {Object} callbacks - {onDetail, onDelete}
    */
   renderRecordingsList(recordings, callbacks) {
     const listEl = document.getElementById('recordings-list');
@@ -292,7 +288,6 @@ class UIManager {
 
     if (!listEl) return;
 
-    // 件数表示
     if (countEl) {
       countEl.textContent = `${recordings.length} 件の録音`;
     }
@@ -315,15 +310,13 @@ class UIManager {
         const dateStr = UIManager.formatDate(rec.createdAt);
         const duration = UIManager.formatTime(rec.duration || 0);
         const langIcon = rec.language === 'ja-JP' ? '🇯🇵' : '🇺🇸';
-
-        // 2行プレビュー用テキスト（空の場合はプレースホルダー）
         const previewText = transcript || '（音声メモのみ）';
 
         return `
           <div class="recording-card" data-id="${rec.id}" id="card-${rec.id}">
             <div class="card-icon">🎙️</div>
             <div class="card-info">
-              <!-- 1行目: 日時バッジ・録音時間・言語 -->
+              <!-- 1行目: 日時・時間・言語 -->
               <div class="card-top-row">
                 <span class="card-date-badge">📅 ${dateStr}</span>
                 <span class="card-duration-badge">⏱️ ${duration}</span>
@@ -336,7 +329,7 @@ class UIManager {
               </div>
             </div>
 
-            <!-- アクション（詳細遷移アイコン ＆ 削除ボタン） -->
+            <!-- アクション -->
             <div class="card-actions">
               <span class="card-arrow-icon" title="詳細を見る">›</span>
               <button class="card-action-btn delete" data-action="delete" data-id="${rec.id}" title="削除">🗑️</button>
@@ -346,9 +339,8 @@ class UIManager {
       })
       .join('');
 
-    // イベントリスナーを設定
+    // カードクリックで詳細へ
     listEl.querySelectorAll('.recording-card').forEach((card) => {
-      // カード全体クリックで詳細へ
       card.addEventListener('click', (e) => {
         if (e.target.closest('[data-action="delete"]')) return;
         const id = card.dataset.id;
@@ -367,7 +359,7 @@ class UIManager {
   }
 
   /**
-   * 詳細ビューを表示
+   * 録音詳細ビューを表示
    * @param {Object} recording - 録音データ
    */
   showDetail(recording) {
@@ -379,11 +371,11 @@ class UIManager {
     if (dateEl) dateEl.textContent = UIManager.formatDate(recording.createdAt);
 
     if (transcriptEl) {
-      if (recording.transcript) {
+      if (recording.transcript && recording.transcript.trim()) {
         transcriptEl.textContent = recording.transcript;
         transcriptEl.classList.remove('detail-transcript-empty');
       } else {
-        transcriptEl.textContent = '文字起こしテキストはありません';
+        transcriptEl.textContent = '文字起こしテキストはありません（音声メモのみ）';
         transcriptEl.classList.add('detail-transcript-empty');
       }
     }
@@ -393,8 +385,8 @@ class UIManager {
 
   /**
    * トースト通知を表示
-   * @param {string} message - メッセージ
-   * @param {string} type - 'success' | 'error' | 'info'
+   * @param {string} message - 表示メッセージ
+   * @param {'success'|'error'|'info'} type - 通知タイプ
    * @param {number} duration - 表示時間（ms）
    */
   showToast(message, type = 'info', duration = 3000) {
@@ -414,7 +406,7 @@ class UIManager {
   }
 
   /**
-   * 確認モーダルを表示
+   * 削除等の確認モーダルを表示
    * @param {Object} options - {icon, title, description, confirmText, onConfirm}
    */
   showConfirmModal(options) {
@@ -451,21 +443,56 @@ class UIManager {
     confirmBtn.addEventListener('click', handleConfirm);
     cancelBtn.addEventListener('click', handleCancel);
 
-    // オーバーレイクリックでも閉じる
     this.modalOverlay.addEventListener('click', (e) => {
       if (e.target === this.modalOverlay) handleCancel();
     }, { once: true });
   }
 
   /**
-   * HTMLエスケープ
+   * クリップボードへコピー（フォールバック付き）
+   * @param {string} text
+   * @returns {Promise<boolean>}
+   */
+  static async copyToClipboard(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {
+      // フォールバックへ移行
+    }
+
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      return true;
+    } catch (e) {
+      console.error('クリップボードコピー失敗:', e);
+      return false;
+    }
+  }
+
+  /**
+   * HTMLエスケープ（XSS対策）
    * @param {string} str
    * @returns {string}
    */
   static escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
   }
 }
 
