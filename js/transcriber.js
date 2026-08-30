@@ -161,26 +161,18 @@ class Transcriber {
   }
 
   /**
-   * 文字起こしを開始
+   * 文字起こしを開始（タップ直後に即座に同期起動）
+   * @returns {boolean}
    */
-  async start() {
-    const { available, reason } = Transcriber.checkAvailability();
-    if (!available) {
-      if (this.onError) this.onError(reason);
+  start() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      if (this.onError) this.onError('このブラウザは音声認識に対応していません。Safariで開いてください。');
       return false;
     }
 
-    if (!this.recognition) {
-      this.init();
-    }
-
-    // iOS Safari対策: マイクをプライミング
-    try {
-      const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      tempStream.getTracks().forEach((track) => track.stop());
-    } catch {
-      // プライミング失敗時は無視して続行
-    }
+    // 毎回フレッシュなインスタンスを生成（iOS Safari必須要件）
+    this.init();
 
     this.finalTranscript = '';
     this.interimTranscript = '';
@@ -189,12 +181,14 @@ class Transcriber {
     this.isListening = true;
 
     try {
-      this.recognition.lang = this.language;
       this.recognition.start();
       console.log(`文字起こし開始 (${this.language})`);
       return true;
     } catch (error) {
-      console.error('文字起こし開始エラー:', error);
+      console.warn('文字起こしstartエラー:', error);
+      if (error.name === 'InvalidStateError') {
+        return true;
+      }
       this.isListening = false;
       return false;
     }

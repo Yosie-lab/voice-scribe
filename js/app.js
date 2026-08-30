@@ -133,73 +133,55 @@ class VoiceScribeApp {
   }
 
   /**
-   * 録音を開始
+   * 録音を開始（iOS Safari同期起動＆完全フェイルセーフ設計）
    * @private
    */
   async _startRecording() {
-    try {
-      // MediaRecorderの対応チェック
-      if (!AudioRecorder.isSupported()) {
-        this.ui.showToast('このブラウザは録音に対応していません。', 'error');
-        return;
-      }
+    this.isRecording = true;
+    this.currentRecordingId = StorageManager.generateId();
+    this.ui.setRecordingStatus('recording');
+    this._startTimer();
+    this.ui.updateTranscript('', '', true);
 
-      // 録音開始
-      const stream = await this.recorder.start();
-
-      this.isRecording = true;
-      this.currentRecordingId = StorageManager.generateId();
-
-      // UI更新
-      this.ui.setRecordingStatus('recording');
-
-      // 言語選択を無効化
-      document.querySelectorAll('.lang-btn').forEach((btn) => {
-        btn.style.pointerEvents = 'none';
-        btn.style.opacity = '0.5';
-      });
-
-      // ビジュアライザーに接続
-      if (this.visualizer) {
-        this.visualizer.stopIdleAnimation();
-        this.visualizer.connectStream(stream);
-      }
-
-      // タイマー開始
-      this._startTimer();
-
-      // 文字起こし開始
-      const transcriptStarted = await this.transcriber.start();
-
-      this.transcriber.onResult = (finalText, interimText) => {
-        this.ui.updateTranscript(finalText, interimText, true);
-      };
-
-      this.transcriber.onError = (message) => {
-        console.warn('文字起こしエラー:', message);
-      };
-
-      // プレースホルダーの更新
-      const placeholderEl = document.getElementById('transcript-placeholder');
-      if (placeholderEl) {
-        if (transcriptStarted) {
-          placeholderEl.style.display = 'none';
-        }
-      }
-
-      // 初期カーソル表示
-      this.ui.updateTranscript('', '', true);
-
-      this.ui.showToast('🎙️ 録音を開始しました', 'success');
-    } catch (error) {
-      console.error('録音開始エラー:', error);
-      this.isRecording = false;
-      this.ui.showToast('録音を開始できませんでした。', 'error');
+    // プレースホルダーを即座に非表示
+    const placeholderEl = document.getElementById('transcript-placeholder');
+    if (placeholderEl) {
+      placeholderEl.style.display = 'none';
     }
+
+    // 1. 文字起こしエンジンをタップ直後に同期起動（iOS Safari必須）
+    this.transcriber.onResult = (finalText, interimText) => {
+      this.ui.updateTranscript(finalText, interimText, true);
+    };
+
+    try {
+      this.transcriber.start();
+    } catch (e) {
+      console.warn('SpeechRecognition start warning:', e);
+    }
+
+    // 2. 音声録音（MediaRecorder）を起動（失敗しても文字起こしは継続）
+    try {
+      const stream = await this.recorder.start();
+      if (this.visualizer && stream) {
+        this.visualizer.stopIdleAnimation();
+        await this.visualizer.connectStream(stream);
+      }
+    } catch (recErr) {
+      console.warn('MediaRecorder warning (文字起こし単独で継続):', recErr);
+    }
+
+    // 言語ボタンの一時無効化
+    document.querySelectorAll('.lang-btn').forEach((btn) => {
+      btn.style.pointerEvents = 'none';
+      btn.style.opacity = '0.5';
+    });
+
+    this.ui.showToast('🎙️ 録音中（お話しください）', 'success', 2000);
   }
 
   /**
-   * 録音を停止して保存
+   * 録音を停止して保存（完全フェイルセーフ）
    * @private
    */
   async _stopRecording() {
@@ -208,12 +190,30 @@ class VoiceScribeApp {
       this.transcriber.stop();
 
       // 録音停止
-      const result = await this.recorder.stop();
+      let audioBlob = null;
+      let audioMime = 'audio/mp4';
+      try {
+        const recResult = await this.recorder.stop();
+        if (recResult) {
+          audioBlob = recResult.blob;
+          audioMime = recResult.mimeType || 'audio/mp4';
+        }
+      } catch (e) {
+        console.warn('Recorder stop warning:', e);
+      }
 
       this.isRecording = false;
-
-      // タイマー停止
       this._stopTimer();
+
+      // ビジュアライザー停止
+      if (this.visualizer) {
+        try {
+          this.visualizer.disconnect();
+          this.visualizer.startIdleAnimation();
+        } catch (e) {
+          console.warn('Visualizer stop warning:', e);
+        }
+      }
 
       // UI更新
       this.ui.setRecordingStatus('standby');
@@ -224,24 +224,19 @@ class VoiceScribeApp {
         btn.style.opacity = '';
       });
 
-      // ビジュアライザー停止
-      if (this.visualizer) {
-        this.visualizer.disconnect();
-        this.visualizer.startIdleAnimation();
-      }
+      // 文字起こしテキストを取得
+      const transcript = (this.transcriber.getFullTranscript() || '').trim();
+      const activeLangBtn = document.querySelector('.lang-btn.active');
+      const language = activeLangBtn ? activeLangBtn.dataset.lang : 'ja-JP';
+      const duration = this.recorder.getElapsedTime() || 0;
 
-      // データを保存
-      if (result && result.blob) {
-        const duration = this.recorder.getElapsedTime() || Math.floor((Date.now() - this.recorder.startTime) / 1000);
-        const transcript = this.transcriber.getFullTranscript();
-        const activeLangBtn = document.querySelector('.lang-btn.active');
-        const language = activeLangBtn ? activeLangBtn.dataset.lang : 'ja-JP';
-
+      // データを保存（テキストまたは音声のいずれかがあれば保存）
+      if (transcript || audioBlob) {
         const recording = {
           id: this.currentRecordingId,
           title: this._generateTitle(transcript, language),
-          audioBlob: result.blob,
-          mimeType: result.mimeType,
+          audioBlob: audioBlob,
+          mimeType: audioMime,
           transcript: transcript,
           language: language,
           duration: duration,
@@ -250,19 +245,17 @@ class VoiceScribeApp {
 
         await this.storage.save(recording);
         await this._refreshRecordingsList();
-
         this.ui.showToast('✅ 録音を保存しました', 'success');
-
-        // 停止後はカーソルを消し、確定テキストをそのまま残して確認できるようにする
-        this.ui.updateTranscript(transcript, '', false);
-      } else {
-        this.ui.updateTranscript('', '', false);
       }
 
+      // 確定テキストを表示状態で残す
+      this.ui.updateTranscript(transcript, '', false);
       this.ui.updateTimer(0);
     } catch (error) {
       console.error('録音停止エラー:', error);
-      this.ui.showToast('録音の保存中にエラーが発生しました。', 'error');
+      this.isRecording = false;
+      this.ui.setRecordingStatus('standby');
+      this._stopTimer();
     }
   }
 
