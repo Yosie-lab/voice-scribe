@@ -196,7 +196,7 @@ class UIManager {
   }
 
   /**
-   * 日時をフォーマット
+   * 日時をフォーマット（見分けやすい詳細フォーマット）
    * @param {number} timestamp
    * @returns {string}
    */
@@ -209,78 +209,22 @@ class UIManager {
     yesterday.setDate(yesterday.getDate() - 1);
     const isYesterday = date.toDateString() === yesterday.toDateString();
 
+    const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+    const weekday = weekdays[date.getDay()];
     const time = date.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+    const month = date.getMonth() + 1;
+    const day = date.getDate();
 
-    if (isToday) return `今日 ${time}`;
-    if (isYesterday) return `昨日 ${time}`;
+    if (isToday) return `今日 ${time} (${month}/${day})`;
+    if (isYesterday) return `昨日 ${time} (${month}/${day})`;
 
-    return date.toLocaleDateString('ja-JP', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  }
-
-  /**
-   * 文字起こしテキストを更新（常に最新の発話行へスムーズスクロール）
-   * @param {string} finalText - 確定テキスト
-   * @param {string} interimText - 暫定テキスト（今まさに発話中の言葉）
-   * @param {boolean} isRecording - 録音中かどうか
-   */
-  updateTranscript(finalText, interimText, isRecording = false) {
-    const textEl = document.getElementById('transcript-text');
-    const placeholderEl = document.getElementById('transcript-placeholder');
-    const charCountEl = document.getElementById('char-count');
-    const clearBtn = document.getElementById('clear-transcript-btn');
-
-    if (!textEl) return;
-
-    const totalText = (finalText || '') + (interimText || '');
-
-    // 文字数カウント更新
-    if (charCountEl) {
-      charCountEl.textContent = totalText.length;
+    // 同じ年なら月日+曜日+時間
+    if (date.getFullYear() === now.getFullYear()) {
+      return `${month}/${day}(${weekday}) ${time}`;
     }
 
-    // クリアボタン表示制御
-    if (clearBtn) {
-      clearBtn.style.display = totalText.length > 0 && !isRecording ? 'inline-block' : 'none';
-    }
-
-    if (!finalText && !interimText) {
-      if (placeholderEl) placeholderEl.style.display = 'block';
-      textEl.innerHTML = '';
-      return;
-    }
-
-    if (placeholderEl) placeholderEl.style.display = 'none';
-
-    let html = '';
-    if (finalText) {
-      html += `<span class="final">${UIManager.escapeHtml(finalText)}</span>`;
-    }
-
-    if (interimText) {
-      // 発話中の言葉は鮮やかなシアンアンダーラインで強調
-      html += `<span class="interim">${UIManager.escapeHtml(interimText)}</span>`;
-    }
-
-    // 録音中なら末尾に点滅するライブカーソルを配置
-    if (isRecording) {
-      html += `<span class="transcript-cursor"></span>`;
-    }
-
-    textEl.innerHTML = html;
-
-    // 常に最新の発話（末尾）が見えるように自動スクロール
-    const wrapper = document.getElementById('transcript-content-wrapper');
-    if (wrapper) {
-      wrapper.scrollTo({
-        top: wrapper.scrollHeight,
-        behavior: 'smooth'
-      });
-    }
+    // 異なる年なら年月日+時間
+    return `${date.getFullYear()}/${month}/${day} ${time}`;
   }
 
   /**
@@ -314,9 +258,9 @@ class UIManager {
     listEl.innerHTML = recordings
       .map((rec) => {
         const preview = rec.transcript
-          ? rec.transcript.substring(0, 60) + (rec.transcript.length > 60 ? '...' : '')
-          : 'テキストなし';
-        const date = UIManager.formatDate(rec.createdAt);
+          ? rec.transcript.substring(0, 100) + (rec.transcript.length > 100 ? '...' : '')
+          : '文字起こしテキストなし';
+        const dateStr = UIManager.formatDate(rec.createdAt);
         const duration = UIManager.formatTime(rec.duration || 0);
         const langIcon = rec.language === 'ja-JP' ? '🇯🇵' : '🇺🇸';
 
@@ -324,13 +268,16 @@ class UIManager {
           <div class="recording-card" data-id="${rec.id}" id="card-${rec.id}">
             <div class="card-icon">🎤</div>
             <div class="card-info">
-              <div class="card-title">${UIManager.escapeHtml(rec.title || '録音')}</div>
-              <div class="card-preview">${UIManager.escapeHtml(preview)}</div>
-              <div class="card-meta">
-                <span>📅 ${date}</span>
-                <span>⏱️ ${duration}</span>
-                <span>${langIcon}</span>
+              <!-- 最上部: 見分けやすい日時バッジ ＆ 時間 -->
+              <div class="card-top-row">
+                <span class="card-date-badge">📅 ${dateStr}</span>
+                <span class="card-duration-badge">⏱️ ${duration}</span>
+                <span class="card-lang-badge">${langIcon}</span>
               </div>
+              <!-- タイトル -->
+              <div class="card-title">${UIManager.escapeHtml(rec.title || '録音')}</div>
+              <!-- 文字起こし本文プレビュー -->
+              <div class="card-preview">${UIManager.escapeHtml(preview)}</div>
             </div>
             <div class="card-actions">
               <button class="card-action-btn delete" data-action="delete" data-id="${rec.id}" title="削除">🗑️</button>
@@ -344,7 +291,6 @@ class UIManager {
     listEl.querySelectorAll('.recording-card').forEach((card) => {
       // カード全体クリックで詳細へ
       card.addEventListener('click', (e) => {
-        // 削除ボタンのクリックは除外
         if (e.target.closest('[data-action="delete"]')) return;
         const id = card.dataset.id;
         if (callbacks.onDetail) callbacks.onDetail(id);
