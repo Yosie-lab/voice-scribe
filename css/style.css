@@ -127,28 +127,30 @@ body::before {
 }
 
 /* ============================================
-   アプリコンテナ
+   アプリコンテナ（ビューポート完全フィット）
    ============================================ */
 #app {
   position: relative;
   z-index: 1;
-  min-height: 100dvh;
+  height: 100dvh;
+  max-height: 100dvh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 /* ============================================
-   ヘッダー
+   ヘッダー（スリム固定）
    ============================================ */
 .app-header {
-  position: sticky;
-  top: 0;
+  flex-shrink: 0;
+  height: 48px;
   z-index: 100;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-md) var(--space-lg);
-  background: rgba(6, 6, 15, 0.8);
+  padding: 0 var(--space-md);
+  background: rgba(8, 11, 20, 0.85);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   border-bottom: 1px solid var(--glass-border);
@@ -157,8 +159,8 @@ body::before {
 .app-logo {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
-  font-size: 1.25rem;
+  gap: 6px;
+  font-size: 1.1rem;
   font-weight: 700;
   background: var(--color-accent-gradient);
   -webkit-background-clip: text;
@@ -167,12 +169,12 @@ body::before {
 }
 
 .app-logo-icon {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.3rem;
+  font-size: 1.15rem;
   -webkit-text-fill-color: initial;
 }
 
@@ -183,20 +185,17 @@ body::before {
 }
 
 /* ============================================
-   ナビゲーションバー（下部タブ）
+   ナビゲーションバー（下部固定フレックス）
    ============================================ */
 .nav-bar {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
+  flex-shrink: 0;
+  height: 52px;
   z-index: 100;
   display: flex;
   justify-content: space-around;
   align-items: center;
-  padding: var(--space-sm) var(--space-md);
-  padding-bottom: calc(var(--space-sm) + var(--safe-bottom));
-  background: rgba(6, 6, 15, 0.9);
+  padding: 0 var(--space-md);
+  background: rgba(8, 11, 20, 0.95);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   border-top: 1px solid var(--glass-border);
@@ -206,8 +205,9 @@ body::before {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 2px;
-  padding: var(--space-xs) var(--space-md);
+  padding: 4px var(--space-md);
   border-radius: var(--radius-md);
   border: none;
   background: none;
@@ -221,7 +221,7 @@ body::before {
 }
 
 .nav-item .nav-icon {
-  font-size: 1.3rem;
+  font-size: 1.15rem;
   transition: var(--transition-fast);
 }
 
@@ -238,12 +238,12 @@ body::before {
 }
 
 /* ============================================
-   ビューコンテナ
+   ビューコンテナ（はみ出し防止のmin-height:0）
    ============================================ */
 .view {
   display: none;
   flex: 1;
-  padding-bottom: calc(70px + var(--safe-bottom));
+  min-height: 0;
   animation: viewFadeIn var(--transition-normal) forwards;
 }
 
@@ -255,7 +255,7 @@ body::before {
 @keyframes viewFadeIn {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(4px);
   }
   to {
     opacity: 1;
@@ -264,14 +264,16 @@ body::before {
 }
 
 /* ============================================
-   録音ビュー（フルスクリーン リアルタイム文字起こしUI）
+   録音ビュー（iPhone SE等にも完全フィット）
    ============================================ */
 .record-view {
   display: flex;
   flex-direction: column;
-  padding: var(--space-xs) var(--space-md) var(--space-sm);
-  gap: var(--space-xs);
-  height: calc(100dvh - 56px - 64px - var(--safe-top) - var(--safe-bottom));
+  padding: 6px 12px 8px;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
   box-sizing: border-box;
 }
 
@@ -674,16 +676,24 @@ body::before {
   color: #080b14;
 }
 
-.transcript-unsupported.visible {
-  display: flex;
-}
-
 /* ============================================
    録音一覧ビュー
    ============================================ */
 .list-view {
-  padding: var(--space-lg);
+  padding: var(--space-md);
   gap: var(--space-md);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ============================================
+   録音詳細ビュー
+   ============================================ */
+.detail-view {
+  padding: var(--space-md);
+  gap: var(--space-md);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* 検索バー */
@@ -1298,30 +1308,63 @@ body::before {
 }
 
 /* ============================================
-   レスポンシブ
+   レスポンシブ（iPhone SE / 小型スマートフォン最適化）
    ============================================ */
+@media (max-height: 700px) {
+  .app-header {
+    height: 42px;
+    padding: 0 10px;
+  }
+
+  .app-logo {
+    font-size: 1rem;
+  }
+
+  .nav-bar {
+    height: 46px;
+  }
+
+  .nav-item .nav-icon {
+    font-size: 1.05rem;
+  }
+
+  .record-view {
+    padding: 4px 8px 6px;
+    gap: 4px;
+  }
+
+  .live-status-bar {
+    padding: 2px 6px;
+  }
+
+  .transcript-content-wrapper {
+    padding: 10px 12px;
+  }
+
+  .transcript-text.prominent {
+    font-size: 1.15rem;
+    line-height: 1.75;
+    padding-bottom: 40px;
+  }
+
+  .record-pill-btn {
+    height: 38px;
+    padding: 8px 20px;
+    font-size: 0.88rem;
+  }
+
+  .control-btn.mini {
+    width: 36px;
+    height: 36px;
+  }
+}
+
 @media (min-width: 768px) {
   .record-view {
-    padding: var(--space-2xl);
-  }
-
-  .visualizer-container {
-    height: 200px;
-    max-width: 500px;
-  }
-
-  .timer-display {
-    font-size: 3.5rem;
-  }
-
-  .record-btn {
-    width: 100px;
-    height: 100px;
-    font-size: 2.4rem;
-  }
-
-  .transcript-area {
-    max-height: 400px;
+    padding: var(--space-lg);
+    max-width: 760px;
+    margin: 0 auto;
+    width: 100%;
   }
 
   .list-view {
