@@ -174,6 +174,60 @@ class UIManager {
   }
 
   /**
+   * 文字起こしテキストを更新（リアルタイム描画）
+   * @param {string} finalText - 確定テキスト
+   * @param {string} interimText - 暫定テキスト（発話中の言葉）
+   * @param {boolean} isRecording - 録音中かどうか
+   */
+  updateTranscript(finalText, interimText, isRecording = false) {
+    const textEl = document.getElementById('transcript-text');
+    const placeholderEl = document.getElementById('transcript-placeholder');
+    const charCountEl = document.getElementById('char-count');
+    const clearBtn = document.getElementById('clear-transcript-btn');
+    const wrapper = document.getElementById('transcript-content-wrapper');
+
+    if (!textEl) return;
+
+    const totalText = (finalText || '') + (interimText || '');
+
+    // 文字数カウント更新
+    if (charCountEl) {
+      charCountEl.textContent = totalText.length;
+    }
+
+    // クリアボタン表示制御
+    if (clearBtn) {
+      clearBtn.style.display = totalText.length > 0 && !isRecording ? 'inline-flex' : 'none';
+    }
+
+    if (!finalText && !interimText) {
+      if (placeholderEl) placeholderEl.style.display = isRecording ? 'none' : 'block';
+      textEl.innerHTML = isRecording ? '<span class="transcript-cursor"></span>' : '';
+      return;
+    }
+
+    if (placeholderEl) placeholderEl.style.display = 'none';
+
+    let html = '';
+    if (finalText) {
+      html += `<span class="final">${UIManager.escapeHtml(finalText)}</span>`;
+    }
+    if (interimText) {
+      html += `<span class="interim">${UIManager.escapeHtml(interimText)}</span>`;
+    }
+    if (isRecording) {
+      html += '<span class="transcript-cursor"></span>';
+    }
+
+    textEl.innerHTML = html;
+
+    // 自動スクロール（最新の言葉に追従）
+    if (wrapper) {
+      wrapper.scrollTop = wrapper.scrollHeight;
+    }
+  }
+
+  /**
    * タイマー表示を更新
    * @param {number} seconds - 経過秒数
    */
