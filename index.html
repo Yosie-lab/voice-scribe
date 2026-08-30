@@ -38,52 +38,95 @@
     <!-- ===== 録音ビュー ===== -->
     <main id="view-record" class="view record-view active">
 
-      <!-- 言語セレクター -->
-      <div class="language-selector" id="language-selector">
-        <button class="lang-btn active" data-lang="ja-JP" id="lang-btn-ja">
-          🇯🇵 日本語
-        </button>
-        <button class="lang-btn" data-lang="en-US" id="lang-btn-en">
-          🇺🇸 English
-        </button>
-      </div>
+      <!-- トップステータスバー（言語・タイマー・波形・文字数） -->
+      <div class="live-status-bar" id="live-status-bar">
+        <div class="status-left">
+          <!-- 言語セレクター -->
+          <div class="language-selector compact" id="language-selector">
+            <button class="lang-btn active" data-lang="ja-JP" id="lang-btn-ja">🇯🇵 JP</button>
+            <button class="lang-btn" data-lang="en-US" id="lang-btn-en">🇺🇸 EN</button>
+          </div>
+          <!-- ライブ状態バッジ -->
+          <div class="live-badge" id="live-badge">
+            <span class="live-dot"></span>
+            <span class="live-label">STANDBY</span>
+          </div>
+        </div>
 
-      <!-- 波形ビジュアライザー -->
-      <div class="visualizer-container" id="visualizer-container">
-        <canvas class="visualizer-canvas" id="visualizer-canvas"></canvas>
-      </div>
+        <div class="status-center">
+          <div class="timer-display compact" id="timer-display">00:00</div>
+        </div>
 
-      <!-- タイマー -->
-      <div class="timer-display" id="timer-display">00:00</div>
-
-      <!-- 録音ボタン -->
-      <div class="record-btn-wrapper" id="record-btn-wrapper">
-        <div class="pulse-ring"></div>
-        <div class="pulse-ring"></div>
-        <div class="pulse-ring"></div>
-        <button class="record-btn" id="record-btn" aria-label="録音開始/停止">
-          <span class="btn-icon-mic">🎙️</span>
-          <span class="btn-icon-stop">⏹️</span>
-        </button>
-      </div>
-
-      <!-- 録音コントロール（録音中のみ表示） -->
-      <div class="record-controls" id="record-controls">
-        <button class="control-btn" id="pause-btn" aria-label="一時停止/再開">⏸️</button>
+        <div class="status-right">
+          <div class="text-stats" id="text-stats">
+            <span id="char-count">0</span>文字
+          </div>
+          <!-- 文字サイズ調整 -->
+          <div class="font-size-controls">
+            <button class="font-btn" id="font-decrease-btn" title="文字を小さく">A-</button>
+            <button class="font-btn" id="font-increase-btn" title="文字を大きく">A+</button>
+          </div>
+        </div>
       </div>
 
       <!-- 文字起こし非対応メッセージ -->
       <div class="transcript-unsupported" id="transcript-unsupported">
         <span>⚠️</span>
-        <span class="unsupported-msg">文字起こし機能は利用できません。</span>
+        <span class="unsupported-msg">文字起こし機能はSafariブラウザ内でご利用ください。</span>
       </div>
 
-      <!-- リアルタイム文字起こしテキスト -->
-      <div class="transcript-area" id="transcript-area">
-        <div class="transcript-placeholder" id="transcript-placeholder">
-          録音を開始すると、ここにリアルタイムで文字起こしが表示されます
+      <!-- メイン文字起こしエリア（大画面ライブテレプロンプター） -->
+      <div class="transcript-area prominent" id="transcript-area">
+        <div class="transcript-header-bar">
+          <span class="transcript-title-label">📝 リアルタイム文字起こし</span>
+          <button class="clear-transcript-btn" id="clear-transcript-btn" title="クリア" style="display:none;">クリア</button>
         </div>
-        <div class="transcript-text" id="transcript-text"></div>
+
+        <!-- リアルタイムテキスト表示部 -->
+        <div class="transcript-content-wrapper" id="transcript-content-wrapper">
+          <div class="transcript-placeholder prominent" id="transcript-placeholder">
+            <div class="placeholder-icon">🎙️</div>
+            <div class="placeholder-main">下の録音ボタンを押して話し始めてください</div>
+            <div class="placeholder-sub">話した言葉がここにリアルタイムでそのまま大きく表示されます</div>
+          </div>
+          <div class="transcript-text prominent" id="transcript-text"></div>
+        </div>
+
+        <!-- アクティブ発話インジケーター -->
+        <div class="speaking-indicator" id="speaking-indicator">
+          <span class="sound-wave-bar"></span>
+          <span class="sound-wave-bar"></span>
+          <span class="sound-wave-bar"></span>
+          <span class="speaking-text">音声を聞き取り中...</span>
+        </div>
+      </div>
+
+      <!-- 下部コントロールデッキ（波形ミニバー + 録音ボタン + 操作） -->
+      <div class="bottom-control-deck" id="bottom-control-deck">
+        <!-- ミニ波形ビジュアライザー -->
+        <div class="visualizer-container compact" id="visualizer-container">
+          <canvas class="visualizer-canvas" id="visualizer-canvas"></canvas>
+        </div>
+
+        <!-- アクションボタンエリア -->
+        <div class="deck-actions">
+          <!-- 一時停止ボタン -->
+          <button class="control-btn mini" id="pause-btn" aria-label="一時停止/再開" style="visibility:hidden;">⏸️</button>
+
+          <!-- メイン録音ボタン -->
+          <div class="record-btn-wrapper prominent" id="record-btn-wrapper">
+            <div class="pulse-ring"></div>
+            <div class="pulse-ring"></div>
+            <div class="pulse-ring"></div>
+            <button class="record-btn prominent" id="record-btn" aria-label="録音開始/停止">
+              <span class="btn-icon-mic">🎙️</span>
+              <span class="btn-icon-stop">⏹️</span>
+            </button>
+          </div>
+
+          <!-- コピーボタン -->
+          <button class="control-btn mini" id="quick-copy-btn" aria-label="テキストをコピー" title="テキストをコピー">📋</button>
+        </div>
       </div>
     </main>
 

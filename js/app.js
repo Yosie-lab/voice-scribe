@@ -104,7 +104,17 @@ class VoiceScribeApp {
       pauseBtn.addEventListener('click', () => this._togglePause());
     }
 
-    // 録音停止コールバック
+    // クリアボタン
+    const clearBtn = document.getElementById('clear-transcript-btn');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        if (this.isRecording) return;
+        this.ui.updateTranscript('', '', false);
+        this.transcriber.reset();
+      });
+    }
+
+    // 録音エラーコールバック
     this.recorder.onError = (message) => {
       this.ui.showToast(message, 'error');
     };
@@ -142,14 +152,14 @@ class VoiceScribeApp {
 
       // UI更新
       const recordBtn = document.getElementById('record-btn');
-      const btnWrapper = document.querySelector('.record-btn-wrapper');
-      const controls = document.getElementById('record-controls');
+      const btnWrapper = document.getElementById('record-btn-wrapper');
       const timerEl = document.getElementById('timer-display');
 
       if (recordBtn) recordBtn.classList.add('recording');
       if (btnWrapper) btnWrapper.classList.add('recording');
-      if (controls) controls.classList.add('visible');
       if (timerEl) timerEl.classList.add('recording');
+
+      this.ui.setRecordingStatus('recording');
 
       // 言語選択を無効化
       document.querySelectorAll('.lang-btn').forEach((btn) => {
@@ -170,23 +180,23 @@ class VoiceScribeApp {
       const transcriptStarted = await this.transcriber.start();
 
       this.transcriber.onResult = (finalText, interimText) => {
-        this.ui.updateTranscript(finalText, interimText);
+        this.ui.updateTranscript(finalText, interimText, true);
       };
 
       this.transcriber.onError = (message) => {
         console.warn('文字起こしエラー:', message);
-        // エラーは表示するが録音は継続
       };
 
       // プレースホルダーの更新
       const placeholderEl = document.getElementById('transcript-placeholder');
       if (placeholderEl) {
         if (transcriptStarted) {
-          placeholderEl.textContent = '話し始めてください...';
-        } else {
-          placeholderEl.textContent = '録音中...（文字起こし非対応）';
+          placeholderEl.style.display = 'none';
         }
       }
+
+      // 初期カーソル表示
+      this.ui.updateTranscript('', '', true);
 
       this.ui.showToast('🎙️ 録音を開始しました', 'success');
     } catch (error) {
@@ -215,14 +225,14 @@ class VoiceScribeApp {
 
       // UI更新
       const recordBtn = document.getElementById('record-btn');
-      const btnWrapper = document.querySelector('.record-btn-wrapper');
-      const controls = document.getElementById('record-controls');
+      const btnWrapper = document.getElementById('record-btn-wrapper');
       const timerEl = document.getElementById('timer-display');
 
       if (recordBtn) recordBtn.classList.remove('recording');
       if (btnWrapper) btnWrapper.classList.remove('recording');
-      if (controls) controls.classList.remove('visible');
       if (timerEl) timerEl.classList.remove('recording');
+
+      this.ui.setRecordingStatus('standby');
 
       // 言語選択を再有効化
       document.querySelectorAll('.lang-btn').forEach((btn) => {
@@ -258,18 +268,14 @@ class VoiceScribeApp {
         await this._refreshRecordingsList();
 
         this.ui.showToast('✅ 録音を保存しました', 'success');
+
+        // 停止後はカーソルを消し、確定テキストをそのまま残して確認できるようにする
+        this.ui.updateTranscript(transcript, '', false);
+      } else {
+        this.ui.updateTranscript('', '', false);
       }
 
-      // テキストとタイマーをリセット
-      this.ui.updateTranscript('', '');
       this.ui.updateTimer(0);
-      const placeholderEl = document.getElementById('transcript-placeholder');
-      if (placeholderEl) {
-        placeholderEl.style.display = 'block';
-        placeholderEl.textContent = '録音を開始すると、ここにリアルタイムで文字起こしが表示されます';
-      }
-
-      this.transcriber.reset();
     } catch (error) {
       console.error('録音停止エラー:', error);
       this.ui.showToast('録音の保存中にエラーが発生しました。', 'error');
@@ -283,15 +289,13 @@ class VoiceScribeApp {
   _togglePause() {
     if (!this.isRecording) return;
 
-    const pauseBtn = document.getElementById('pause-btn');
-
     if (this.recorder.isPaused) {
       this.recorder.resume();
-      if (pauseBtn) pauseBtn.textContent = '⏸️';
+      this.ui.setRecordingStatus('recording');
       this.ui.showToast('▶️ 録音を再開しました', 'info');
     } else {
       this.recorder.pause();
-      if (pauseBtn) pauseBtn.textContent = '▶️';
+      this.ui.setRecordingStatus('paused');
       this.ui.showToast('⏸️ 録音を一時停止しました', 'info');
     }
   }

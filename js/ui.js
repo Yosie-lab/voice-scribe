@@ -23,6 +23,81 @@ class UIManager {
 
     // モーダル
     this.modalOverlay = document.getElementById('modal-overlay');
+
+    // フォントサイズ段階（sm, md, lg, xl）
+    this.fontSizes = ['sm', 'md', 'lg', 'xl'];
+    this.currentFontIndex = 1; // デフォルト: md (1.25rem)
+
+    this._initFontControls();
+    this._initQuickCopy();
+  }
+
+  /**
+   * フォントサイズ変更ボタンの初期化
+   * @private
+   */
+  _initFontControls() {
+    const decBtn = document.getElementById('font-decrease-btn');
+    const incBtn = document.getElementById('font-increase-btn');
+    const textEl = document.getElementById('transcript-text');
+
+    if (decBtn) {
+      decBtn.addEventListener('click', () => {
+        if (this.currentFontIndex > 0) {
+          this.currentFontIndex--;
+          this._applyFontSize();
+        }
+      });
+    }
+
+    if (incBtn) {
+      incBtn.addEventListener('click', () => {
+        if (this.currentFontIndex < this.fontSizes.length - 1) {
+          this.currentFontIndex++;
+          this._applyFontSize();
+        }
+      });
+    }
+
+    this._applyFontSize();
+  }
+
+  /**
+   * 現在のフォントサイズクラスを適用
+   * @private
+   */
+  _applyFontSize() {
+    const textEl = document.getElementById('transcript-text');
+    if (!textEl) return;
+
+    this.fontSizes.forEach(size => textEl.classList.remove(`font-size-${size}`));
+    textEl.classList.add(`font-size-${this.fontSizes[this.currentFontIndex]}`);
+  }
+
+  /**
+   * ワンタップコピーボタンの初期化
+   * @private
+   */
+  _initQuickCopy() {
+    const copyBtn = document.getElementById('quick-copy-btn');
+    if (!copyBtn) return;
+
+    copyBtn.addEventListener('click', async () => {
+      const textEl = document.getElementById('transcript-text');
+      const text = textEl ? textEl.innerText.trim() : '';
+
+      if (!text) {
+        this.showToast('コピーするテキストがありません', 'info');
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(text);
+        this.showToast('📋 テキストをクリップボードにコピーしました', 'success');
+      } catch {
+        this.showToast('コピーに失敗しました', 'error');
+      }
+    });
   }
 
   /**
@@ -60,6 +135,41 @@ class UIManager {
     }
 
     this.currentView = viewName;
+  }
+
+  /**
+   * 録音ステータスバッジを更新
+   * @param {'standby'|'recording'|'paused'} state
+   */
+  setRecordingStatus(state) {
+    const badge = document.getElementById('live-badge');
+    const label = badge ? badge.querySelector('.live-label') : null;
+    const pauseBtn = document.getElementById('pause-btn');
+
+    if (!badge || !label) return;
+
+    badge.className = 'live-badge';
+
+    if (state === 'recording') {
+      badge.classList.add('recording');
+      label.textContent = 'REC LIVE';
+      if (pauseBtn) {
+        pauseBtn.style.visibility = 'visible';
+        pauseBtn.textContent = '⏸️';
+      }
+    } else if (state === 'paused') {
+      badge.classList.add('paused');
+      label.textContent = 'PAUSED';
+      if (pauseBtn) {
+        pauseBtn.style.visibility = 'visible';
+        pauseBtn.textContent = '▶️';
+      }
+    } else {
+      label.textContent = 'STANDBY';
+      if (pauseBtn) {
+        pauseBtn.style.visibility = 'hidden';
+      }
+    }
   }
 
   /**
@@ -114,17 +224,34 @@ class UIManager {
   /**
    * 文字起こしテキストを更新（録音画面）
    * @param {string} finalText - 確定テキスト
-   * @param {string} interimText - 暫定テキスト
+   * @param {string} interimText - 暫定テキスト（今まさに発話中の言葉）
+   * @param {boolean} isRecording - 録音中かどうか
    */
-  updateTranscript(finalText, interimText) {
+  updateTranscript(finalText, interimText, isRecording = false) {
     const textEl = document.getElementById('transcript-text');
     const placeholderEl = document.getElementById('transcript-placeholder');
+    const charCountEl = document.getElementById('char-count');
+    const speakingIndicator = document.getElementById('speaking-indicator');
+    const clearBtn = document.getElementById('clear-transcript-btn');
 
     if (!textEl) return;
+
+    const totalText = (finalText || '') + (interimText || '');
+
+    // 文字数カウント更新
+    if (charCountEl) {
+      charCountEl.textContent = totalText.length;
+    }
+
+    // クリアボタン表示制御
+    if (clearBtn) {
+      clearBtn.style.display = totalText.length > 0 && !isRecording ? 'inline-block' : 'none';
+    }
 
     if (!finalText && !interimText) {
       if (placeholderEl) placeholderEl.style.display = 'block';
       textEl.innerHTML = '';
+      if (speakingIndicator) speakingIndicator.classList.remove('visible');
       return;
     }
 
@@ -134,15 +261,26 @@ class UIManager {
     if (finalText) {
       html += `<span class="final">${UIManager.escapeHtml(finalText)}</span>`;
     }
+
     if (interimText) {
+      // 発話中の言葉はシアンバブルで光らせて表示
       html += `<span class="interim">${UIManager.escapeHtml(interimText)}</span>`;
+      if (speakingIndicator) speakingIndicator.classList.add('visible');
+    } else {
+      if (speakingIndicator) speakingIndicator.classList.remove('visible');
     }
+
+    // 録音中なら末尾に点滅するライブカーソルを配置
+    if (isRecording) {
+      html += `<span class="transcript-cursor"></span>`;
+    }
+
     textEl.innerHTML = html;
 
-    // 自動スクロール
-    const area = document.getElementById('transcript-area');
-    if (area) {
-      area.scrollTop = area.scrollHeight;
+    // 自動スムーズスクロール（最新の言葉に追従）
+    const wrapper = document.getElementById('transcript-content-wrapper');
+    if (wrapper) {
+      wrapper.scrollTop = wrapper.scrollHeight;
     }
   }
 
