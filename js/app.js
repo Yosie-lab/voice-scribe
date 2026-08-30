@@ -460,6 +460,12 @@ class VoiceScribeApp {
       progressBar.addEventListener('click', (e) => this._seekPlayback(e));
     }
 
+    // テキストコピー
+    const detailCopyBtn = document.getElementById('detail-copy-btn');
+    if (detailCopyBtn) {
+      detailCopyBtn.addEventListener('click', () => this._copyDetailText());
+    }
+
     // テキストダウンロード
     const exportTextBtn = document.getElementById('export-text-btn');
     if (exportTextBtn) {
@@ -639,6 +645,45 @@ class VoiceScribeApp {
     const ratio = x / rect.width;
 
     this.currentAudio.currentTime = ratio * this.currentAudio.duration;
+  }
+
+  /**
+   * 詳細画面の文字起こしテキストをクリップボードにコピー
+   * @private
+   */
+  async _copyDetailText() {
+    try {
+      const recording = await this.storage.getById(this.currentDetailId);
+      const text = recording && recording.transcript ? recording.transcript.trim() : '';
+
+      if (!text) {
+        this.ui.showToast('コピーするテキストがありません。', 'info');
+        return;
+      }
+
+      await navigator.clipboard.writeText(text);
+      this.ui.showToast('📋 全文テキストをコピーしました', 'success');
+    } catch (err) {
+      console.warn('クリップボードコピー失敗、フォールバック試行:', err);
+      // フォールバック（execCommand）
+      try {
+        const textEl = document.getElementById('detail-transcript-text');
+        if (textEl) {
+          const range = document.createRange();
+          range.selectNodeContents(textEl);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          document.execCommand('copy');
+          selection.removeAllRanges();
+          this.ui.showToast('📋 全文テキストをコピーしました', 'success');
+          return;
+        }
+      } catch (fallbackErr) {
+        console.error('コピー失敗:', fallbackErr);
+      }
+      this.ui.showToast('コピーに失敗しました。長押しで選択してください。', 'error');
+    }
   }
 
   /**

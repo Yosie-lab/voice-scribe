@@ -316,48 +316,29 @@ class UIManager {
         const duration = UIManager.formatTime(rec.duration || 0);
         const langIcon = rec.language === 'ja-JP' ? '🇯🇵' : '🇺🇸';
 
-        let firstPhrase = '';
-        let restText = '';
-
-        if (transcript) {
-          // 句読点や改行で出だしのフレーズを抽出
-          const match = transcript.match(/^([^。！？\.\n\?\!]{1,40}[。！？\.\n\?\!]?)/);
-          if (match && match[0]) {
-            firstPhrase = match[0].trim();
-            restText = transcript.substring(firstPhrase.length).trim();
-          } else {
-            firstPhrase = transcript.substring(0, 35) + (transcript.length > 35 ? '...' : '');
-            restText = transcript.substring(35).trim();
-          }
-          if (restText.length > 80) {
-            restText = restText.substring(0, 80) + '...';
-          }
-        } else {
-          firstPhrase = '（音声メモのみ）';
-        }
+        // 2行プレビュー用テキスト（空の場合はプレースホルダー）
+        const previewText = transcript || '（音声メモのみ）';
 
         return `
           <div class="recording-card" data-id="${rec.id}" id="card-${rec.id}">
             <div class="card-icon">🎙️</div>
             <div class="card-info">
-              <!-- 最上部: 見分けやすい日時バッジ ＆ 時間 -->
+              <!-- 1行目: 日時バッジ・録音時間・言語 -->
               <div class="card-top-row">
                 <span class="card-date-badge">📅 ${dateStr}</span>
                 <span class="card-duration-badge">⏱️ ${duration}</span>
                 <span class="card-lang-badge">${langIcon}</span>
               </div>
 
-              <!-- 話した内容の出だし（中身が一目でわかる） -->
-              <div class="card-speech-start">
-                <span class="quote-mark">“</span>
-                <span class="speech-text">${UIManager.escapeHtml(firstPhrase)}</span>
-                <span class="quote-mark">”</span>
+              <!-- 2行目: コンパクトな2行テキストプレビュー -->
+              <div class="card-compact-text ${!transcript ? 'empty-memo' : ''}">
+                ${UIManager.escapeHtml(previewText)}
               </div>
-
-              <!-- 続きの文章（あれば表示） -->
-              ${restText ? `<div class="card-preview">${UIManager.escapeHtml(restText)}</div>` : ''}
             </div>
+
+            <!-- アクション（詳細遷移アイコン ＆ 削除ボタン） -->
             <div class="card-actions">
+              <span class="card-arrow-icon" title="詳細を見る">›</span>
               <button class="card-action-btn delete" data-action="delete" data-id="${rec.id}" title="削除">🗑️</button>
             </div>
           </div>
