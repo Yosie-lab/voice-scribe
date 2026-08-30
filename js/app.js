@@ -58,14 +58,23 @@ class VoiceScribeApp {
   }
 
   /**
-   * 文字起こし機能の対応状況を確認
+   * 文字起こし機能の対応状況およびiOSスタンドアロンモードを確認
    * @private
    */
   _checkTranscriptionSupport() {
+    // iOSスタンドアロンPWAモードの検知
+    const isStandalone = window.navigator.standalone === true ||
+      window.matchMedia('(display-mode: standalone)').matches;
+
+    const standaloneBanner = document.getElementById('standalone-banner');
+    if (isStandalone && standaloneBanner) {
+      standaloneBanner.style.display = 'flex';
+    }
+
     const { available, reason } = Transcriber.checkAvailability();
     const unsupportedEl = document.getElementById('transcript-unsupported');
 
-    if (!available && unsupportedEl) {
+    if (!available && unsupportedEl && !isStandalone) {
       unsupportedEl.classList.add('visible');
       const msgEl = unsupportedEl.querySelector('.unsupported-msg');
       if (msgEl) msgEl.textContent = reason;

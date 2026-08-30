@@ -325,6 +325,47 @@ body::before {
   cursor: pointer;
 }
 
+/* スタンドアロンPWA警告＆Safari誘導バナー */
+.standalone-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(0, 240, 255, 0.12);
+  border: 1px solid rgba(0, 240, 255, 0.4);
+  border-radius: var(--radius-md);
+  color: #f1f5f9;
+  font-size: 0.76rem;
+  flex-shrink: 0;
+}
+
+.standalone-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.standalone-text {
+  flex: 1;
+  line-height: 1.35;
+}
+
+.open-safari-btn {
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent-gradient);
+  color: #080b14;
+  font-weight: 700;
+  font-size: 0.72rem;
+  text-decoration: none;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 240, 255, 0.35);
+  flex-shrink: 0;
+}
+
+.open-safari-btn:active {
+  transform: scale(0.94);
+}
+
 /* 非対応警告 */
 .transcript-unsupported {
   display: none;
