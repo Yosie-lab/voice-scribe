@@ -1,7 +1,7 @@
 // VoiceScribe Service Worker
-// オフラインキャッシュとPWA対応
+// Network-First戦略で常に最新アセットを配信
 
-const CACHE_NAME = 'voicescribe-v7';
+const CACHE_NAME = 'voicescribe-v22';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -17,18 +17,17 @@ const ASSETS_TO_CACHE = [
   './icons/icon-512.png'
 ];
 
-// インストール時にアセットをキャッシュ
+// インストール時に即座にアクティブ化
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       return cache.addAll(ASSETS_TO_CACHE);
     })
   );
-  // 即座にアクティブ化
-  self.skipWaiting();
 });
 
-// アクティベーション時に古いキャッシュを削除
+// アクティベーション時に過去のキャッシュを全削除
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((cacheNames) => {
@@ -37,30 +36,27 @@ self.addEventListener('activate', (event) => {
           .filter((name) => name !== CACHE_NAME)
           .map((name) => caches.delete(name))
       );
-    })
+    }).then(() => self.clients.claim())
   );
-  // すべてのクライアントで即座に制御を取得
-  self.clients.claim();
 });
 
-// Cache First戦略でリクエストを処理
+// Network First戦略: 常に最新をサーバーから取得し、ネットワーク不通時のみキャッシュを使用
 self.addEventListener('fetch', (event) => {
+  if (event.request.method !== 'GET') return;
+
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-      return fetch(event.request).then((response) => {
-        // 有効なレスポンスのみキャッシュ
-        if (!response || response.status !== 200 || response.type !== 'basic') {
-          return response;
+    fetch(event.request)
+      .then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200) {
+          const responseClone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseClone);
+          });
         }
-        const responseToCache = response.clone();
-        caches.open(CACHE_NAME).then((cache) => {
-          cache.put(event.request, responseToCache);
-        });
-        return response;
-      });
-    })
+        return networkResponse;
+      })
+      .catch(() => {
+        return caches.match(event.request);
+      })
   );
 });

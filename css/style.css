@@ -664,20 +664,13 @@ body::before {
    録音一覧ビュー
    ============================================ */
 .list-view {
-  padding: var(--space-md);
-  gap: var(--space-md);
+  padding: 10px 12px;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-}
-
-/* ============================================
-   録音詳細ビュー
-   ============================================ */
-.detail-view {
-  padding: var(--space-md);
-  gap: var(--space-md);
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
+  box-sizing: border-box;
 }
 
 /* 検索バー */
@@ -685,23 +678,24 @@ body::before {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
+  padding: 8px 12px;
   background: var(--glass-bg);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-xl);
   transition: var(--transition-fast);
+  flex-shrink: 0;
 }
 
 .search-bar:focus-within {
   border-color: var(--color-border-active);
-  box-shadow: 0 0 20px var(--color-glow-purple);
+  box-shadow: 0 0 16px var(--color-glow-cyan);
 }
 
 .search-icon {
   color: var(--color-text-muted);
-  font-size: 1rem;
+  font-size: 0.95rem;
   flex-shrink: 0;
 }
 
@@ -711,7 +705,7 @@ body::before {
   background: none;
   color: var(--color-text-primary);
   font-family: var(--font-primary);
-  font-size: 0.9rem;
+  font-size: 0.88rem;
   outline: none;
 }
 
@@ -722,18 +716,18 @@ body::before {
 /* 録音数表示 */
 .recordings-count {
   color: var(--color-text-muted);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 500;
-  padding: 0 var(--space-xs);
+  padding: 0 2px;
+  flex-shrink: 0;
 }
 
 /* 録音カードリスト */
 .recordings-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
-  flex: 1;
-  overflow-y: auto;
+  gap: 8px;
+  padding-bottom: calc(90px + env(safe-area-inset-bottom, 20px));
 }
 
 /* 空状態 */
@@ -742,24 +736,24 @@ body::before {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: var(--space-3xl) var(--space-lg);
+  padding: var(--space-2xl) var(--space-lg);
   gap: var(--space-md);
   text-align: center;
 }
 
 .empty-state-icon {
-  font-size: 3rem;
+  font-size: 2.5rem;
   opacity: 0.3;
 }
 
 .empty-state-title {
-  font-size: 1.1rem;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--color-text-secondary);
 }
 
 .empty-state-desc {
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   color: var(--color-text-muted);
   line-height: 1.5;
 }
@@ -768,9 +762,9 @@ body::before {
 .recording-card {
   display: flex;
   align-items: flex-start;
-  gap: var(--space-sm);
-  padding: 12px;
-  background: var(--glass-bg);
+  gap: 10px;
+  padding: 12px 14px;
+  background: rgba(14, 20, 36, 0.85);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   border: 1px solid var(--glass-border);
@@ -779,13 +773,13 @@ body::before {
   transition: var(--transition-fast);
   -webkit-tap-highlight-color: transparent;
   position: relative;
-  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .recording-card:active {
   transform: scale(0.98);
   border-color: var(--color-border-active);
-  background: rgba(16, 28, 54, 0.7);
+  background: rgba(20, 32, 58, 0.9);
 }
 
 .recording-card::before {
@@ -800,17 +794,17 @@ body::before {
 }
 
 .card-icon {
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   border-radius: var(--radius-md);
   background: rgba(0, 212, 255, 0.12);
   border: 1px solid rgba(0, 212, 255, 0.25);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1rem;
+  font-size: 0.95rem;
   flex-shrink: 0;
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .card-info {
@@ -818,7 +812,7 @@ body::before {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
 }
 
 /* カード最上部の日時・時間バッジ行 */
@@ -827,6 +821,7 @@ body::before {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+  margin-bottom: 2px;
 }
 
 .card-date-badge {
@@ -835,9 +830,9 @@ body::before {
   font-weight: 700;
   color: var(--color-accent-secondary);
   background: rgba(0, 240, 255, 0.1);
-  padding: 1px 6px;
+  padding: 2px 7px;
   border-radius: 4px;
-  border: 1px solid rgba(0, 240, 255, 0.2);
+  border: 1px solid rgba(0, 240, 255, 0.25);
   letter-spacing: 0.02em;
 }
 
