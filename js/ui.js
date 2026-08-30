@@ -257,16 +257,34 @@ class UIManager {
 
     listEl.innerHTML = recordings
       .map((rec) => {
-        const preview = rec.transcript
-          ? rec.transcript.substring(0, 100) + (rec.transcript.length > 100 ? '...' : '')
-          : '文字起こしテキストなし';
+        const transcript = (rec.transcript || '').trim();
         const dateStr = UIManager.formatDate(rec.createdAt);
         const duration = UIManager.formatTime(rec.duration || 0);
         const langIcon = rec.language === 'ja-JP' ? '🇯🇵' : '🇺🇸';
 
+        let firstPhrase = '';
+        let restText = '';
+
+        if (transcript) {
+          // 句読点や改行で出だしのフレーズを抽出
+          const match = transcript.match(/^([^。！？\.\n\?\!]{1,40}[。！？\.\n\?\!]?)/);
+          if (match && match[0]) {
+            firstPhrase = match[0].trim();
+            restText = transcript.substring(firstPhrase.length).trim();
+          } else {
+            firstPhrase = transcript.substring(0, 35) + (transcript.length > 35 ? '...' : '');
+            restText = transcript.substring(35).trim();
+          }
+          if (restText.length > 80) {
+            restText = restText.substring(0, 80) + '...';
+          }
+        } else {
+          firstPhrase = '（音声メモのみ）';
+        }
+
         return `
           <div class="recording-card" data-id="${rec.id}" id="card-${rec.id}">
-            <div class="card-icon">🎤</div>
+            <div class="card-icon">🎙️</div>
             <div class="card-info">
               <!-- 最上部: 見分けやすい日時バッジ ＆ 時間 -->
               <div class="card-top-row">
@@ -274,10 +292,16 @@ class UIManager {
                 <span class="card-duration-badge">⏱️ ${duration}</span>
                 <span class="card-lang-badge">${langIcon}</span>
               </div>
-              <!-- タイトル -->
-              <div class="card-title">${UIManager.escapeHtml(rec.title || '録音')}</div>
-              <!-- 文字起こし本文プレビュー -->
-              <div class="card-preview">${UIManager.escapeHtml(preview)}</div>
+
+              <!-- 話した内容の出だし（中身が一目でわかる） -->
+              <div class="card-speech-start">
+                <span class="quote-mark">“</span>
+                <span class="speech-text">${UIManager.escapeHtml(firstPhrase)}</span>
+                <span class="quote-mark">”</span>
+              </div>
+
+              <!-- 続きの文章（あれば表示） -->
+              ${restText ? `<div class="card-preview">${UIManager.escapeHtml(restText)}</div>` : ''}
             </div>
             <div class="card-actions">
               <button class="card-action-btn delete" data-action="delete" data-id="${rec.id}" title="削除">🗑️</button>
