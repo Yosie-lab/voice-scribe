@@ -16,7 +16,7 @@
   <link rel="apple-touch-icon" href="icons/icon-192.png">
 
   <!-- スタイルシート -->
-  <link rel="stylesheet" href="css/style.css?v=29">
+  <link rel="stylesheet" href="css/style.css?v=30">
 
   <!-- ファビコン -->
   <link rel="icon" href="icons/icon-192.png" type="image/png">
@@ -189,11 +189,16 @@
         </div>
       </div>
 
-      <!-- 文字起こしテキスト -->
+      <!-- 文字起こしテキスト（全文表示） -->
       <div class="detail-transcript" id="detail-transcript">
         <div class="detail-transcript-header">
-          <div class="detail-transcript-title">
-            📝 文字起こしテキスト
+          <div class="detail-transcript-title-box">
+            <span class="detail-transcript-title">📝 文字起こしテキスト</span>
+            <span class="detail-char-count-badge" id="detail-char-count">0文字</span>
+            <div class="font-size-controls">
+              <button class="font-btn" id="detail-font-decrease-btn" title="文字を小さく">A-</button>
+              <button class="font-btn" id="detail-font-increase-btn" title="文字を大きく">A+</button>
+            </div>
           </div>
           <div class="export-actions">
             <button class="export-btn primary-action" id="detail-copy-btn" title="文字起こしテキストをコピー">📋 コピー</button>
@@ -226,11 +231,11 @@
   </div>
 
   <!-- ===== JavaScript モジュール ===== -->
-  <script src="js/storage.js?v=29"></script>
-  <script src="js/recorder.js?v=29"></script>
-  <script src="js/transcriber.js?v=29"></script>
-  <script src="js/visualizer.js?v=29"></script>
-  <script src="js/ui.js?v=29"></script>
-  <script src="js/app.js?v=29"></script>
+  <script src="js/storage.js?v=30"></script>
+  <script src="js/recorder.js?v=30"></script>
+  <script src="js/transcriber.js?v=30"></script>
+  <script src="js/visualizer.js?v=30"></script>
+  <script src="js/ui.js?v=30"></script>
+  <script src="js/app.js?v=30"></script>
 </body>
 </html>

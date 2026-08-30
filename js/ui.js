@@ -33,44 +33,56 @@ class UIManager {
   }
 
   /**
-   * フォントサイズ変更ボタンの初期化
+   * フォントサイズ変更ボタンの初期化（録音画面＆詳細画面）
    * @private
    */
   _initFontControls() {
+    // 録音画面
     const decBtn = document.getElementById('font-decrease-btn');
     const incBtn = document.getElementById('font-increase-btn');
 
-    if (decBtn) {
-      decBtn.addEventListener('click', () => {
-        if (this.currentFontIndex > 0) {
-          this.currentFontIndex--;
-          this._applyFontSize();
-        }
-      });
-    }
+    // 詳細画面
+    const detailDecBtn = document.getElementById('detail-font-decrease-btn');
+    const detailIncBtn = document.getElementById('detail-font-increase-btn');
 
-    if (incBtn) {
-      incBtn.addEventListener('click', () => {
-        if (this.currentFontIndex < this.fontSizes.length - 1) {
-          this.currentFontIndex++;
-          this._applyFontSize();
-        }
-      });
-    }
+    const handleDecrease = () => {
+      if (this.currentFontIndex > 0) {
+        this.currentFontIndex--;
+        this._applyFontSize();
+      }
+    };
+
+    const handleIncrease = () => {
+      if (this.currentFontIndex < this.fontSizes.length - 1) {
+        this.currentFontIndex++;
+        this._applyFontSize();
+      }
+    };
+
+    if (decBtn) decBtn.addEventListener('click', handleDecrease);
+    if (incBtn) incBtn.addEventListener('click', handleIncrease);
+    if (detailDecBtn) detailDecBtn.addEventListener('click', handleDecrease);
+    if (detailIncBtn) detailIncBtn.addEventListener('click', handleIncrease);
 
     this._applyFontSize();
   }
 
   /**
-   * 現在のフォントサイズクラスを適用
+   * 現在のフォントサイズクラスを適用（録音画面 & 詳細画面）
    * @private
    */
   _applyFontSize() {
     const textEl = document.getElementById('transcript-text');
-    if (!textEl) return;
+    const detailTextEl = document.getElementById('detail-transcript-text');
 
-    this.fontSizes.forEach(size => textEl.classList.remove(`font-size-${size}`));
-    textEl.classList.add(`font-size-${this.fontSizes[this.currentFontIndex]}`);
+    this.fontSizes.forEach(size => {
+      if (textEl) textEl.classList.remove(`font-size-${size}`);
+      if (detailTextEl) detailTextEl.classList.remove(`font-size-${size}`);
+    });
+
+    const currentSizeClass = `font-size-${this.fontSizes[this.currentFontIndex]}`;
+    if (textEl) textEl.classList.add(currentSizeClass);
+    if (detailTextEl) detailTextEl.classList.add(currentSizeClass);
   }
 
   /**
@@ -366,19 +378,30 @@ class UIManager {
     const titleEl = document.getElementById('detail-title');
     const dateEl = document.getElementById('detail-date');
     const transcriptEl = document.getElementById('detail-transcript-text');
+    const charCountEl = document.getElementById('detail-char-count');
 
     if (titleEl) titleEl.textContent = recording.title || '録音';
     if (dateEl) dateEl.textContent = UIManager.formatDate(recording.createdAt);
 
+    const transcript = (recording.transcript || '').trim();
+
+    // 文字数カウント更新
+    if (charCountEl) {
+      charCountEl.textContent = `${transcript.length}文字`;
+    }
+
     if (transcriptEl) {
-      if (recording.transcript && recording.transcript.trim()) {
-        transcriptEl.textContent = recording.transcript;
+      if (transcript) {
+        transcriptEl.textContent = transcript;
         transcriptEl.classList.remove('detail-transcript-empty');
       } else {
         transcriptEl.textContent = '文字起こしテキストはありません（音声メモのみ）';
         transcriptEl.classList.add('detail-transcript-empty');
       }
     }
+
+    // 現在のフォントサイズを再適用
+    this._applyFontSize();
 
     this.switchView('detail');
   }

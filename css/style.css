@@ -970,15 +970,33 @@ body::before {
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--glass-border);
+}
+
+.detail-transcript-title-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .detail-transcript-title {
   font-size: 0.85rem;
   font-weight: 700;
   color: var(--color-accent-secondary);
+}
+
+.detail-char-count-badge {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--color-accent-primary);
+  background: rgba(0, 240, 255, 0.12);
+  border: 1px solid rgba(0, 240, 255, 0.3);
+  padding: 2px 6px;
+  border-radius: 4px;
 }
 
 .export-actions {
@@ -1015,7 +1033,7 @@ body::before {
 }
 
 .detail-transcript-text {
-  font-size: 0.95rem;
+  font-size: 1.02rem;
   line-height: 1.85;
   color: #f1f5f9;
   white-space: pre-wrap;
@@ -1023,7 +1041,14 @@ body::before {
   padding: 4px 0;
   user-select: text;
   -webkit-user-select: text;
+  transition: font-size var(--transition-fast);
 }
+
+/* 詳細画面のフォントサイズ階層 */
+.detail-transcript-text.font-size-sm { font-size: 0.88rem; line-height: 1.75; }
+.detail-transcript-text.font-size-md { font-size: 1.02rem; line-height: 1.85; }
+.detail-transcript-text.font-size-lg { font-size: 1.25rem; line-height: 1.95; }
+.detail-transcript-text.font-size-xl { font-size: 1.5rem; line-height: 2.05; }
 
 .detail-transcript-empty {
   color: var(--color-text-muted);
