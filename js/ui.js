@@ -26,7 +26,7 @@ class UIManager {
 
     // フォントサイズ段階（sm, md, lg, xl）
     this.fontSizes = ['sm', 'md', 'lg', 'xl'];
-    this.currentFontIndex = 1; // デフォルト: md
+    this.currentFontIndex = 2; // デフォルト: lg（1サイズ大きく）
 
     // 設定モーダル
     this.settingsModal = document.getElementById('settings-modal-overlay');
@@ -37,6 +37,7 @@ class UIManager {
     this._initFontControls();
     this._initQuickCopy();
     this._initSettingsModal();
+    this._applyFontSize();
   }
 
   /**

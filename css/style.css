@@ -532,10 +532,10 @@ body::before {
 }
 
 /* フォントサイズ階層 */
-.transcript-text.font-size-sm { font-size: 0.88rem; }
-.transcript-text.font-size-md { font-size: 1.05rem; }
-.transcript-text.font-size-lg { font-size: 1.25rem; }
-.transcript-text.font-size-xl { font-size: 1.5rem; }
+.transcript-text.font-size-sm { font-size: 1.0rem; }
+.transcript-text.font-size-md { font-size: 1.18rem; }
+.transcript-text.font-size-lg { font-size: 1.38rem; }
+.transcript-text.font-size-xl { font-size: 1.65rem; }
 
 /* 下部コントロールデッキ */
 .bottom-control-deck {
@@ -706,29 +706,29 @@ body::before {
 }
 
 .card-date-badge {
-  font-size: 0.72rem;
+  font-size: 0.82rem;
   font-weight: 700;
   color: var(--color-accent-secondary);
 }
 
 .card-duration-badge {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   color: var(--color-text-muted);
   background: rgba(255, 255, 255, 0.05);
-  padding: 1px 4px;
+  padding: 2px 6px;
   border-radius: 4px;
 }
 
 .card-lang-badge {
-  font-size: 0.72rem;
+  font-size: 0.82rem;
 }
 
 .card-compact-text {
-  font-size: 0.88rem;
+  font-size: 1.02rem;
   font-weight: 500;
   color: #f1f5f9;
-  line-height: 1.45;
+  line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -740,7 +740,7 @@ body::before {
 .card-compact-text.empty-memo {
   color: var(--color-text-muted);
   font-style: italic;
-  font-size: 0.82rem;
+  font-size: 0.92rem;
 }
 
 .card-actions {
