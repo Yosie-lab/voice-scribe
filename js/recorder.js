@@ -76,7 +76,7 @@ class AudioRecorder {
         }
       };
 
-      this.mediaRecorder.start(1000);
+      this.mediaRecorder.start(500);
       this.state = 'recording';
       this.startTime = Date.now();
       this.pausedDuration = 0;
@@ -102,6 +102,11 @@ class AudioRecorder {
    */
   pause() {
     if (this.mediaRecorder && this.state === 'recording') {
+      try {
+        if (this.mediaRecorder.state === 'recording') {
+          this.mediaRecorder.requestData();
+        }
+      } catch {}
       this.mediaRecorder.pause();
       this.state = 'paused';
       this.pauseStartTime = Date.now();
@@ -158,12 +163,15 @@ class AudioRecorder {
       };
 
       try {
+        if (this.mediaRecorder.state === 'recording') {
+          this.mediaRecorder.requestData();
+        }
         this.mediaRecorder.stop();
-      } catch {
+      } catch (error) {
+        console.warn('録音停止警告:', error);
         this._cleanupStream();
-        this.state = 'inactive';
         resolve({
-          blob: null,
+          blob: this.audioChunks.length > 0 ? new Blob(this.audioChunks, { type: this.mimeType || 'audio/mp4' }) : null,
           mimeType: this.mimeType || 'audio/mp4',
           duration: duration
         });
