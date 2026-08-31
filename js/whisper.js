@@ -54,13 +54,18 @@ class WhisperService {
     }
 
     try {
-      // Groqのモデル一覧エンドポイントでキーの有効性を検証
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+
       const response = await fetch('https://api.groq.com/openai/v1/models', {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${key}`
-        }
+        },
+        signal: controller.signal
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -71,7 +76,8 @@ class WhisperService {
       return { success: true, message: '✅ Groq API 接続成功！Whisper-large-v3 が利用可能です。' };
     } catch (err) {
       console.error('Groq API test error:', err);
-      return { success: false, message: `通信エラー: ${err.message}` };
+      const isAbort = err.name === 'AbortError';
+      return { success: false, message: isAbort ? '接続タイムアウト（ネットワークを確認してください）' : `通信エラー: ${err.message}` };
     }
   }
 
@@ -90,36 +96,50 @@ class WhisperService {
       throw new Error('文字起こし対象の音声データがありません。');
     }
 
-    // 1. ファイル名とMIMEタイプの決定
+    // 1. ファイル拡張子の決定（iOS Safariはmp4、他はwebmなど）
     const mimeType = audioBlob.type || 'audio/mp4';
     const ext = mimeType.includes('webm') ? 'webm' : (mimeType.includes('ogg') ? 'ogg' : 'mp4');
-    const audioFile = new File([audioBlob], `recording.${ext}`, { type: mimeType });
+    const fileName = `audio.${ext}`;
 
-    // 2. FormDataの構築
+    // 2. FormDataの構築（Blobを直接ファイル名付きでappendしてiOS Safari互換性を最大化）
     const formData = new FormData();
-    formData.append('file', audioFile);
+    formData.append('file', audioBlob, fileName);
     formData.append('model', this.model);
     formData.append('language', language === 'en-US' ? 'en' : 'ja');
-    formData.append('temperature', '0.0'); // 忠実度を最大化し、ループや幻覚を100%防止
+    formData.append('temperature', '0.0');
     formData.append('response_format', 'json');
 
-    // 3. Groq Whisper APIへの送信
-    const response = await fetch(this.endpoint, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.apiKey}`
-      },
-      body: formData
-    });
+    // 3. タイムアウト付きフェッチ（最大10秒）
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const errMsg = errorData.error?.message || `HTTP ${response.status}`;
-      throw new Error(`Groq Whisper エラー: ${errMsg}`);
+    try {
+      const response = await fetch(this.endpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`
+        },
+        body: formData,
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errMsg = errorData.error?.message || `HTTP ${response.status}`;
+        throw new Error(`Groqエラー: ${errMsg}`);
+      }
+
+      const data = await response.json();
+      return (data.text || '').trim();
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        throw new Error('文字起こし処理がタイムアウトしました。');
+      }
+      throw err;
     }
-
-    const data = await response.json();
-    return (data.text || '').trim();
   }
 }
 
