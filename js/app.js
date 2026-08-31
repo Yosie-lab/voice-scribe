@@ -19,9 +19,6 @@ class VoiceScribeApp {
     this.currentAudio = null;
     this.currentAudioUrl = null;
     this.playbackInterval = null;
-    this.wakeLock = null; // 画面自動スリープ防止ロック
-
-    window.app = this;
   }
 
   /**
@@ -47,13 +44,6 @@ class VoiceScribeApp {
       this._setupRecordView();
       this._setupListView();
       this._setupDetailView();
-
-      // 画面スリープ防止の可視性変更リスナー
-      document.addEventListener('visibilitychange', async () => {
-        if (document.visibilityState === 'visible' && this.isRecording) {
-          await this._requestWakeLock();
-        }
-      });
 
       // 音声認識対応状況の確認
       this._checkTranscriptionSupport();
@@ -138,12 +128,6 @@ class VoiceScribeApp {
     this.recorder.onError = (message) => {
       this.ui.showToast(message, 'error');
     };
-
-    // 音声認識エラーコールバック
-    this.transcriber.onError = (message) => {
-      console.warn('文字起こしエラー通知:', message);
-      this.ui.showToast(message, 'info');
-    };
   }
 
   /**
@@ -175,7 +159,7 @@ class VoiceScribeApp {
       placeholderEl.style.display = 'none';
     }
 
-    // 1. 文字起こしエンジンをタップ同期で最優先起動（iOS Safari必須）
+    // 1. 文字起こしエンジンを同期起動（iOS Safari必須）
     this.transcriber.onResult = (finalText, interimText) => {
       this.ui.updateTranscript(finalText, interimText, true);
     };
@@ -186,10 +170,8 @@ class VoiceScribeApp {
       console.warn('SpeechRecognition start warning:', e);
     }
 
-    // 2. 音声録音（MediaRecorder）を起動（SpeechRecognitionのマイク確立後に開始）
+    // 2. 音声録音（MediaRecorder）を起動（失敗時も文字起こしは継続）
     try {
-      // 100ms遅延でSpeechRecognitionのマイクストリーム優先権を確定
-      await new Promise(r => setTimeout(r, 100));
       const stream = await this.recorder.start();
       if (this.visualizer && stream) {
         this.visualizer.stopIdleAnimation();
@@ -198,9 +180,6 @@ class VoiceScribeApp {
     } catch (recErr) {
       console.warn('MediaRecorder start warning:', recErr);
     }
-
-    // 3. 画面自動スリープ防止ロック（Wake Lock）を取得
-    await this._requestWakeLock();
 
     // 言語ボタンを一時無効化
     document.querySelectorAll('.lang-btn').forEach((btn) => {
@@ -217,9 +196,6 @@ class VoiceScribeApp {
    */
   async _stopRecording() {
     try {
-      // 画面スリープ防止ロックを解除
-      await this._releaseWakeLock();
-
       // 1. 停止前に文字起こしテキストを確実に取得
       let transcript = (this.transcriber.getFullTranscript() || '').trim();
 
@@ -357,7 +333,7 @@ class VoiceScribeApp {
   }
 
   /**
-   * 録音タイトルを自動生成（スマート要約見出しを活用）
+   * 録音タイトルを自動生成
    * @param {string} transcript
    * @param {string} language
    * @returns {string}
@@ -373,12 +349,6 @@ class VoiceScribeApp {
     });
 
     if (transcript && transcript.length > 0) {
-      if (window.TextSummarizer) {
-        const summary = TextSummarizer.summarize(transcript, language);
-        if (summary && summary.headline) {
-          return summary.headline.replace(/^📌\s*/, '');
-        }
-      }
       const firstLine = transcript.split(/[。\.\n！？\!\?]/)[0].trim();
       if (firstLine.length > 0) {
         return firstLine.substring(0, 25) + (firstLine.length > 25 ? '...' : '');
@@ -717,7 +687,7 @@ class VoiceScribeApp {
   }
 
   /**
-   * 詳細画面のテキストをクリップボードにコピー（表示中のタブに応じた内容）
+   * 詳細画面のテキストをクリップボードにコピー
    * @private
    */
   async _copyDetailText() {
@@ -730,21 +700,9 @@ class VoiceScribeApp {
         return;
       }
 
-      let copyTargetText = text;
-      let toastMsg = '📋 全文テキストをコピーしました';
-
-      // 要約タブがアクティブな場合は要約整形テキストをコピー
-      if (this.ui && this.ui.currentDetailTab === 'summary' && window.TextSummarizer) {
-        const summary = TextSummarizer.summarize(text, recording.language);
-        if (summary && summary.formattedText) {
-          copyTargetText = summary.formattedText;
-          toastMsg = '✨ 要約まとめテキストをコピーしました';
-        }
-      }
-
-      const success = await UIManager.copyToClipboard(copyTargetText);
+      const success = await UIManager.copyToClipboard(text);
       if (success) {
-        this.ui.showToast(toastMsg, 'success');
+        this.ui.showToast('📋 全文テキストをコピーしました', 'success');
       } else {
         this.ui.showToast('コピーに失敗しました。長押しで選択してください。', 'error');
       }
@@ -809,43 +767,6 @@ class VoiceScribeApp {
     } catch (error) {
       console.error('音声エクスポートエラー:', error);
       this.ui.showToast('ダウンロードに失敗しました。', 'error');
-    }
-  }
-
-  /**
-   * 画面スリープ防止ロック（Screen Wake Lock）を取得
-   * @private
-   */
-  async _requestWakeLock() {
-    if ('wakeLock' in navigator) {
-      try {
-        if (!this.wakeLock) {
-          this.wakeLock = await navigator.wakeLock.request('screen');
-          console.log('Screen Wake Lock 取得成功（画面スリープ防止中）');
-          this.wakeLock.addEventListener('release', () => {
-            console.log('Screen Wake Lock 解除');
-            this.wakeLock = null;
-          });
-        }
-      } catch (err) {
-        console.warn('Screen Wake Lock 取得警告:', err);
-      }
-    }
-  }
-
-  /**
-   * 画面スリープ防止ロック（Screen Wake Lock）を解放
-   * @private
-   */
-  async _releaseWakeLock() {
-    if (this.wakeLock) {
-      try {
-        await this.wakeLock.release();
-        this.wakeLock = null;
-        console.log('Screen Wake Lock 手動解放完了');
-      } catch (err) {
-        console.warn('Screen Wake Lock 解除警告:', err);
-      }
     }
   }
 }

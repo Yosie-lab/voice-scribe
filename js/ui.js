@@ -28,42 +28,8 @@ class UIManager {
     this.fontSizes = ['sm', 'md', 'lg', 'xl'];
     this.currentFontIndex = 1; // デフォルト: md
 
-    // 詳細画面のアクティブタブ ('summary' | 'full')
-    this.currentDetailTab = 'summary';
-
     this._initFontControls();
     this._initQuickCopy();
-    this._initDetailTabs();
-  }
-
-  /**
-   * 詳細画面の「要約・まとめ」と「全文」タブ切り替え初期化
-   * @private
-   */
-  _initDetailTabs() {
-    const tabBtns = document.querySelectorAll('.detail-tab-btn');
-    tabBtns.forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const tab = btn.dataset.detailTab;
-        if (!tab) return;
-
-        tabBtns.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-
-        const summaryContent = document.getElementById('detail-tab-summary');
-        const fullContent = document.getElementById('detail-tab-full');
-
-        if (tab === 'summary') {
-          if (summaryContent) summaryContent.classList.add('active');
-          if (fullContent) fullContent.classList.remove('active');
-        } else {
-          if (summaryContent) summaryContent.classList.remove('active');
-          if (fullContent) fullContent.classList.add('active');
-        }
-
-        this.currentDetailTab = tab;
-      });
-    });
   }
 
   /**
@@ -356,26 +322,7 @@ class UIManager {
         const dateStr = UIManager.formatDate(rec.createdAt);
         const duration = UIManager.formatTime(rec.duration || 0);
         const langIcon = rec.language === 'ja-JP' ? '🇯🇵' : '🇺🇸';
-
-        // 簡略化見出しとプレビューを生成
-        let headline = '';
-        let previewText = '';
-
-        if (transcript) {
-          const summary = window.TextSummarizer
-            ? TextSummarizer.summarize(transcript, rec.language)
-            : null;
-
-          if (summary && summary.headline) {
-            headline = summary.headline;
-          }
-          previewText = summary && summary.summaryBullets.length > 0
-            ? summary.summaryBullets.join(' ')
-            : transcript;
-        } else {
-          headline = '📌 音声メモ';
-          previewText = '（文字起こしテキストなし）';
-        }
+        const previewText = transcript || '（音声メモのみ）';
 
         return `
           <div class="recording-card" data-id="${rec.id}" id="card-${rec.id}">
@@ -388,10 +335,7 @@ class UIManager {
                 <span class="card-lang-badge">${langIcon}</span>
               </div>
 
-              <!-- 2行目: 簡略化見出し -->
-              <div class="card-headline">${UIManager.escapeHtml(headline)}</div>
-
-              <!-- 3行目: コンパクトな2行要約プレビュー -->
+              <!-- 2行目: コンパクトな2行テキストプレビュー -->
               <div class="card-compact-text ${!transcript ? 'empty-memo' : ''}">
                 ${UIManager.escapeHtml(previewText)}
               </div>
@@ -427,7 +371,7 @@ class UIManager {
   }
 
   /**
-   * 録音詳細ビューを表示（要約・まとめ＆全文）
+   * 録音詳細ビューを表示
    * @param {Object} recording - 録音データ
    */
   showDetail(recording) {
@@ -435,28 +379,17 @@ class UIManager {
     const dateEl = document.getElementById('detail-date');
     const transcriptEl = document.getElementById('detail-transcript-text');
     const charCountEl = document.getElementById('detail-char-count');
-    const summaryBox = document.getElementById('summary-box');
+
+    if (titleEl) titleEl.textContent = recording.title || '録音';
+    if (dateEl) dateEl.textContent = UIManager.formatDate(recording.createdAt);
 
     const transcript = (recording.transcript || '').trim();
-
-    // 要約の生成
-    const summary = window.TextSummarizer
-      ? TextSummarizer.summarize(transcript, recording.language)
-      : null;
-
-    if (titleEl) {
-      titleEl.textContent = (summary && summary.headline) ? summary.headline : (recording.title || '録音');
-    }
-    if (dateEl) {
-      dateEl.textContent = UIManager.formatDate(recording.createdAt);
-    }
 
     // 文字数カウント更新
     if (charCountEl) {
       charCountEl.textContent = `${transcript.length}文字`;
     }
 
-    // 1. 全文テキストの描画
     if (transcriptEl) {
       if (transcript) {
         transcriptEl.textContent = transcript;
@@ -466,55 +399,6 @@ class UIManager {
         transcriptEl.classList.add('detail-transcript-empty');
       }
     }
-
-    // 2. 要約・まとめボックスの描画
-    if (summaryBox) {
-      if (transcript && summary) {
-        let summaryHtml = `
-          <div class="summary-section">
-            <div class="summary-section-title">✨ 要点まとめ</div>
-            <ul class="summary-bullet-list">
-              ${summary.summaryBullets.map(b => `<li>${UIManager.escapeHtml(b)}</li>`).join('')}
-            </ul>
-          </div>
-        `;
-
-        if (summary.keywords && summary.keywords.length > 0) {
-          summaryHtml += `
-            <div class="summary-section">
-              <div class="summary-section-title">🏷️ キーワード</div>
-              <div class="summary-tags">
-                ${summary.keywords.map(k => `<span class="summary-tag">#${UIManager.escapeHtml(k)}</span>`).join('')}
-              </div>
-            </div>
-          `;
-        }
-
-        if (summary.actionItems && summary.actionItems.length > 0) {
-          summaryHtml += `
-            <div class="summary-section">
-              <div class="summary-section-title">🎯 決定・アクション事項</div>
-              <ol class="summary-action-list">
-                ${summary.actionItems.map(a => `<li>${UIManager.escapeHtml(a)}</li>`).join('')}
-              </ol>
-            </div>
-          `;
-        }
-
-        summaryBox.innerHTML = summaryHtml;
-      } else {
-        summaryBox.innerHTML = `
-          <div class="summary-empty">
-            <div class="summary-empty-icon">📝</div>
-            <div>文字起こしテキストがないため、要約を表示できません。</div>
-          </div>
-        `;
-      }
-    }
-
-    // デフォルトで「要約・まとめ」タブをアクティブに
-    const summaryBtn = document.getElementById('tab-summary-btn');
-    if (summaryBtn) summaryBtn.click();
 
     // 現在のフォントサイズを再適用
     this._applyFontSize();
@@ -586,8 +470,6 @@ class UIManager {
       if (e.target === this.modalOverlay) handleCancel();
     }, { once: true });
   }
-
-
 
   /**
    * クリップボードへコピー（フォールバック付き）
