@@ -69,8 +69,17 @@ class VoiceScribeApp {
       window.matchMedia('(display-mode: standalone)').matches;
 
     const standaloneBanner = document.getElementById('standalone-banner');
+    const openSafariLink = document.getElementById('open-safari-link');
+
     if (isStandalone && standaloneBanner) {
       standaloneBanner.style.display = 'flex';
+
+      if (openSafariLink) {
+        openSafariLink.addEventListener('click', (e) => {
+          e.preventDefault();
+          window.open('https://yosie-lab.github.io/voice-scribe/', '_blank');
+        });
+      }
     }
 
     const { available, reason } = Transcriber.checkAvailability();
