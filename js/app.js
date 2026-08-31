@@ -8,6 +8,7 @@ class VoiceScribeApp {
     this.storage = new StorageManager();
     this.recorder = new AudioRecorder();
     this.transcriber = new Transcriber();
+    this.whisper = new WhisperService();
     this.ui = null;
     this.visualizer = null;
 
@@ -19,6 +20,8 @@ class VoiceScribeApp {
     this.currentAudio = null;
     this.currentAudioUrl = null;
     this.playbackInterval = null;
+
+    window.app = this;
   }
 
   /**
@@ -251,12 +254,30 @@ class VoiceScribeApp {
 
       // データを保存（テキストまたは音声のいずれかがあれば保存）
       if (transcript || audioBlob) {
+        let finalTranscript = transcript;
+
+        // Groq Whisper APIキーがある場合、録音音声から100%忠実な文字起こしを爆速実行
+        if (this.whisper.hasApiKey() && audioBlob) {
+          try {
+            this.ui.showWhisperOverlay();
+            const whisperText = await this.whisper.transcribeAudio(audioBlob, language);
+            if (whisperText && whisperText.trim()) {
+              finalTranscript = whisperText.trim();
+            }
+          } catch (whisperErr) {
+            console.warn('Whisper自動文字起こし警告（Safariテキストを使用）:', whisperErr);
+            this.ui.showToast(`Whisperスキップ: ${whisperErr.message}`, 'info', 3000);
+          } finally {
+            this.ui.hideWhisperOverlay();
+          }
+        }
+
         const recording = {
           id: this.currentRecordingId,
-          title: this._generateTitle(transcript, language),
+          title: this._generateTitle(finalTranscript, language),
           audioBlob: audioBlob,
           mimeType: audioMime,
-          transcript: transcript,
+          transcript: finalTranscript,
           language: language,
           duration: duration,
           createdAt: Date.now()
@@ -264,17 +285,21 @@ class VoiceScribeApp {
 
         await this.storage.save(recording);
         await this._refreshRecordingsList();
-        this.ui.showToast('✅ 録音を保存しました', 'success');
+        this.ui.showToast('✅ 録音と文字起こしを保存しました', 'success');
+
+        // 画面のテキストも最新に更新
+        this.ui.updateTranscript(finalTranscript, '', false);
+      } else {
+        this.ui.updateTranscript(transcript, '', false);
       }
 
-      // 確定テキストを表示状態で残す
-      this.ui.updateTranscript(transcript, '', false);
       this.ui.updateTimer(0);
     } catch (error) {
       console.error('録音停止エラー:', error);
       this.isRecording = false;
       this.ui.setRecordingStatus('standby');
       this._stopTimer();
+      if (this.ui.hideWhisperOverlay) this.ui.hideWhisperOverlay();
     }
   }
 
@@ -489,6 +514,12 @@ class VoiceScribeApp {
       detailCopyBtn.addEventListener('click', () => this._copyDetailText());
     }
 
+    // Whisper再変換ボタン
+    const detailWhisperBtn = document.getElementById('detail-whisper-btn');
+    if (detailWhisperBtn) {
+      detailWhisperBtn.addEventListener('click', () => this._requestWhisperDetailTranscribe());
+    }
+
     // テキストダウンロードボタン
     const exportTextBtn = document.getElementById('export-text-btn');
     if (exportTextBtn) {
@@ -499,6 +530,50 @@ class VoiceScribeApp {
     const exportAudioBtn = document.getElementById('export-audio-btn');
     if (exportAudioBtn) {
       exportAudioBtn.addEventListener('click', () => this._exportAudio());
+    }
+  }
+
+  /**
+   * 詳細画面から手動でGroq Whisper文字起こしを実行
+   * @private
+   */
+  async _requestWhisperDetailTranscribe() {
+    if (!this.currentDetailId) return;
+
+    if (!this.whisper.hasApiKey()) {
+      this.ui.showToast('⚙️ 設定画面からGroq APIキーを登録してください', 'info', 4000);
+      const settingsBtn = document.getElementById('header-settings-btn');
+      if (settingsBtn) settingsBtn.click();
+      return;
+    }
+
+    try {
+      const recording = await this.storage.getById(this.currentDetailId);
+      if (!recording || !recording.audioBlob) {
+        this.ui.showToast('音声データが保存されていないため、Whisper変換を実行できません。', 'error');
+        return;
+      }
+
+      this.ui.showWhisperOverlay();
+
+      const whisperText = await this.whisper.transcribeAudio(recording.audioBlob, recording.language || 'ja-JP');
+
+      if (whisperText && whisperText.trim()) {
+        recording.transcript = whisperText.trim();
+        recording.title = this._generateTitle(whisperText.trim(), recording.language || 'ja-JP');
+
+        await this.storage.save(recording);
+        await this._refreshRecordingsList();
+
+        // 詳細画面を再描画
+        this.ui.showDetail(recording);
+        this.ui.showToast('⚡ Whisper文字起こしが完了しました！', 'success', 3000);
+      }
+    } catch (err) {
+      console.error('詳細Whisper文字起こしエラー:', err);
+      this.ui.showToast(`Whisperエラー: ${err.message}`, 'error', 5000);
+    } finally {
+      this.ui.hideWhisperOverlay();
     }
   }
 

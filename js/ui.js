@@ -28,8 +28,15 @@ class UIManager {
     this.fontSizes = ['sm', 'md', 'lg', 'xl'];
     this.currentFontIndex = 1; // デフォルト: md
 
+    // 設定モーダル
+    this.settingsModal = document.getElementById('settings-modal-overlay');
+
+    // Whisper解析中オーバーレイ
+    this.whisperOverlay = document.getElementById('whisper-processing-overlay');
+
     this._initFontControls();
     this._initQuickCopy();
+    this._initSettingsModal();
   }
 
   /**
@@ -469,6 +476,109 @@ class UIManager {
     this.modalOverlay.addEventListener('click', (e) => {
       if (e.target === this.modalOverlay) handleCancel();
     }, { once: true });
+  }
+
+  /**
+   * Groq設定モーダルの初期化
+   * @private
+   */
+  _initSettingsModal() {
+    const settingsBtn = document.getElementById('header-settings-btn');
+    const closeBtn = document.getElementById('settings-modal-close');
+    const toggleVisBtn = document.getElementById('toggle-key-visibility-btn');
+    const keyInput = document.getElementById('groq-api-key-input');
+    const testBtn = document.getElementById('test-groq-btn');
+    const saveBtn = document.getElementById('save-settings-btn');
+    const statusBox = document.getElementById('settings-status-box');
+
+    if (!settingsBtn || !this.settingsModal) return;
+
+    // 開く
+    settingsBtn.addEventListener('click', () => {
+      if (window.app && window.app.whisper) {
+        if (keyInput) keyInput.value = window.app.whisper.apiKey || '';
+      }
+      if (statusBox) statusBox.innerHTML = '';
+      this.settingsModal.classList.add('active');
+    });
+
+    // 閉じる
+    const closeSettings = () => {
+      this.settingsModal.classList.remove('active');
+    };
+    if (closeBtn) closeBtn.addEventListener('click', closeSettings);
+    this.settingsModal.addEventListener('click', (e) => {
+      if (e.target === this.settingsModal) closeSettings();
+    });
+
+    // APIキーの表示/非表示切り替え
+    if (toggleVisBtn && keyInput) {
+      toggleVisBtn.addEventListener('click', () => {
+        const isPwd = keyInput.type === 'password';
+        keyInput.type = isPwd ? 'text' : 'password';
+        toggleVisBtn.textContent = isPwd ? '🙈' : '👁️';
+      });
+    }
+
+    // 接続テスト
+    if (testBtn) {
+      testBtn.addEventListener('click', async () => {
+        const key = keyInput ? keyInput.value.trim() : '';
+        if (!key) {
+          if (statusBox) statusBox.innerHTML = '<span class="status-err">⚠️ APIキーを入力してください</span>';
+          return;
+        }
+        testBtn.disabled = true;
+        testBtn.textContent = '⏳ テスト中...';
+        if (statusBox) statusBox.innerHTML = '<span class="status-info">Groq APIに接続中...</span>';
+
+        const whisper = window.app ? window.app.whisper : new WhisperService();
+        const result = await whisper.testConnection(key);
+
+        testBtn.disabled = false;
+        testBtn.textContent = '🔄 接続テスト';
+
+        if (statusBox) {
+          if (result.success) {
+            statusBox.innerHTML = `<span class="status-ok">${result.message}</span>`;
+          } else {
+            statusBox.innerHTML = `<span class="status-err">${result.message}</span>`;
+          }
+        }
+      });
+    }
+
+    // 保存
+    if (saveBtn) {
+      saveBtn.addEventListener('click', () => {
+        const key = keyInput ? keyInput.value.trim() : '';
+
+        if (window.app && window.app.whisper) {
+          window.app.whisper.saveApiKey(key);
+        }
+
+        this.showToast('💾 設定を保存しました', 'success');
+        closeSettings();
+      });
+    }
+  }
+
+  /**
+   * Whisper解析中オーバーレイを表示
+   */
+  showWhisperOverlay() {
+    if (this.whisperOverlay) {
+      this.whisperOverlay.classList.add('active');
+    }
+  }
+
+  /**
+   * Whisper解析中オーバーレイを非表示
+   */
+  hideWhisperOverlay() {
+    if (this.whisperOverlay) {
+      this.whisperOverlay.classList.remove('active');
+    }
   }
 
   /**

@@ -16,7 +16,7 @@
   <link rel="apple-touch-icon" href="icons/icon-192.png">
 
   <!-- スタイルシート -->
-  <link rel="stylesheet" href="css/style.css?v=43">
+  <link rel="stylesheet" href="css/style.css?v=44">
 
   <!-- ファビコン -->
   <link rel="icon" href="icons/icon-192.png" type="image/png">
@@ -31,17 +31,20 @@
         <span class="app-logo-text">VoiceScribe</span>
       </div>
 
-      <!-- ヘッダー統合ナビゲーションタブ -->
-      <nav class="header-nav-tabs" id="header-nav-tabs">
-        <button class="nav-tab-btn active" data-view="record" id="nav-record">
-          <span class="tab-icon">🎙️</span>
-          <span>録音</span>
-        </button>
-        <button class="nav-tab-btn" data-view="list" id="nav-list">
-          <span class="tab-icon">📂</span>
-          <span>一覧</span>
-        </button>
-      </nav>
+      <!-- ヘッダー統合ナビゲーションタブ ＆ 設定ボタン -->
+      <div class="header-right-actions">
+        <nav class="header-nav-tabs" id="header-nav-tabs">
+          <button class="nav-tab-btn active" data-view="record" id="nav-record">
+            <span class="tab-icon">🎙️</span>
+            <span>録音</span>
+          </button>
+          <button class="nav-tab-btn" data-view="list" id="nav-list">
+            <span class="tab-icon">📂</span>
+            <span>一覧</span>
+          </button>
+        </nav>
+        <button class="settings-header-btn" id="header-settings-btn" title="Groq Whisper設定" aria-label="設定">⚙️</button>
+      </div>
     </header>
 
     <!-- ===== 録音ビュー ===== -->
@@ -201,6 +204,7 @@
             </div>
           </div>
           <div class="export-actions">
+            <button class="export-btn whisper-action" id="detail-whisper-btn" title="録音音声からGroq Whisperで高精度文字起こし">✨ Whisper変換</button>
             <button class="export-btn primary-action" id="detail-copy-btn" title="文字起こしテキストをコピー">📋 コピー</button>
             <button class="export-btn" id="export-text-btn" title="テキストファイルとして保存">📄 保存</button>
             <button class="export-btn" id="export-audio-btn" title="音声ファイルを保存">🎵 音声</button>
@@ -212,8 +216,60 @@
       </div>
     </section>
 
+    <!-- ===== Whisper解析中オーバーレイ ===== -->
+    <div class="ai-processing-overlay" id="whisper-processing-overlay">
+      <div class="ai-processing-card">
+        <div class="ai-spinner">⚡</div>
+        <div class="ai-processing-title">Groq Whisper 高速文字起こし中...</div>
+        <div class="ai-processing-desc">録音された音声を100%忠実にテキスト化しています（約0.5秒）</div>
+      </div>
+    </div>
+
     <!-- ===== トースト通知コンテナ ===== -->
     <div class="toast-container" id="toast-container"></div>
+
+    <!-- ===== ⚙️ 設定モーダル (Groq Whisper API) ===== -->
+    <div class="modal-overlay" id="settings-modal-overlay">
+      <div class="modal-card settings-modal-card">
+        <div class="settings-modal-header">
+          <div class="settings-modal-title">⚙️ Groq Whisper 設定</div>
+          <button class="settings-modal-close" id="settings-modal-close" aria-label="閉じる">✕</button>
+        </div>
+
+        <div class="settings-modal-body">
+          <div class="settings-section">
+            <label class="settings-label" for="groq-api-key-input">
+              <span>🔑 Groq API キー</span>
+              <span class="settings-badge-free">完全無料・爆速</span>
+            </label>
+            <div class="settings-input-wrapper">
+              <input
+                type="password"
+                id="groq-api-key-input"
+                class="settings-input"
+                placeholder="gsk_...（APIキーを貼り付け）"
+                autocomplete="off"
+                spellcheck="false"
+              >
+              <button class="settings-toggle-visibility-btn" id="toggle-key-visibility-btn" title="表示/非表示">👁️</button>
+            </div>
+            <p class="settings-hint">
+              Groq Cloud で無料取得できるAPIキーを登録すると、録音停止時に<b>録音された音声を0.5秒で一言一句漏らさず完璧に文字起こし</b>します。
+            </p>
+            <a href="https://console.groq.com/keys" target="_blank" rel="noopener" class="settings-link">
+              👉 Groq Cloud で無料APIキーを取得（カード不要）
+            </a>
+          </div>
+
+          <div class="settings-status-box" id="settings-status-box"></div>
+        </div>
+
+        <div class="settings-modal-footer">
+          <button class="settings-btn secondary" id="test-groq-btn">🔄 接続テスト</button>
+          <button class="settings-btn primary" id="save-settings-btn">💾 保存する</button>
+        </div>
+      </div>
+    </div>
 
     <!-- ===== 確認モーダル ===== -->
     <div class="modal-overlay" id="modal-overlay">
@@ -231,11 +287,12 @@
   </div>
 
   <!-- ===== JavaScript モジュール ===== -->
-  <script src="js/storage.js?v=43"></script>
-  <script src="js/recorder.js?v=43"></script>
-  <script src="js/transcriber.js?v=43"></script>
-  <script src="js/visualizer.js?v=43"></script>
-  <script src="js/ui.js?v=43"></script>
-  <script src="js/app.js?v=43"></script>
+  <script src="js/storage.js?v=44"></script>
+  <script src="js/recorder.js?v=44"></script>
+  <script src="js/transcriber.js?v=44"></script>
+  <script src="js/whisper.js?v=44"></script>
+  <script src="js/visualizer.js?v=44"></script>
+  <script src="js/ui.js?v=44"></script>
+  <script src="js/app.js?v=44"></script>
 </body>
 </html>
