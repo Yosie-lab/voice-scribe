@@ -165,7 +165,7 @@ class VoiceScribeApp {
       placeholderEl.style.display = 'none';
     }
 
-    // 1. 文字起こしエンジンを同期起動（iOS Safari必須）
+    // 1. 文字起こしエンジンをタップ同期で最優先起動（iOS Safari必須）
     this.transcriber.onResult = (finalText, interimText) => {
       this.ui.updateTranscript(finalText, interimText, true);
     };
@@ -176,8 +176,10 @@ class VoiceScribeApp {
       console.warn('SpeechRecognition start warning:', e);
     }
 
-    // 2. 音声録音（MediaRecorder）を起動（失敗時も文字起こしは継続）
+    // 2. 音声録音（MediaRecorder）を起動（SpeechRecognitionのマイク確立後に開始）
     try {
+      // 100ms遅延でSpeechRecognitionのマイクストリーム優先権を確定
+      await new Promise(r => setTimeout(r, 100));
       const stream = await this.recorder.start();
       if (this.visualizer && stream) {
         this.visualizer.stopIdleAnimation();

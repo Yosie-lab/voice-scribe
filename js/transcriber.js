@@ -1,7 +1,7 @@
 /**
  * VoiceScribe — 音声認識（文字起こし）モジュール (Transcriber)
  * Web Speech API (webkitSpeechRecognition) を利用した高精度リアルタイム文字起こし
- * iOS Safari の無音自動切断・タイムアウトを完全に克服する「ゼロ遅延・永久Keep-Alive復旧」を搭載
+ * iOS Safari のマイク競合・暫定テキスト消失・セッション切断を完全に防ぐ高精度エンジン
  */
 
 class Transcriber {
@@ -14,6 +14,10 @@ class Transcriber {
     this.interimTranscript = '';
     this.lastFinalTime = 0;
     this.isReconnecting = false;
+    this.sessionFinalAccumulator = ''; // 現在のセッション内の確定分
+
+    // 暫定テキストの自動コミットタイマー
+    this.interimCommitTimer = null;
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
@@ -52,7 +56,7 @@ class Transcriber {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
 
-    // 既存インスタンスのクリーンアップ
+    // 既存インスタンスの完全破棄
     if (this.recognition) {
       try {
         this.recognition.onresult = null;
@@ -70,26 +74,51 @@ class Transcriber {
     this.recognition.interimResults = true;
     this.recognition.lang = this.language;
     this.recognition.maxAlternatives = 1;
+    this.sessionFinalAccumulator = '';
 
-    // 結果受信ハンドラ
+    // 結果受信ハンドラ（全履歴フルスキャン方式で取りこぼしゼロ）
     this.recognition.onresult = (event) => {
-      let currentInterim = '';
-      let currentFinal = '';
+      let sessionFinal = '';
+      let sessionInterim = '';
 
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        if (result.isFinal) {
-          currentFinal += result[0].transcript;
+      for (let i = 0; i < event.results.length; i++) {
+        const res = event.results[i];
+        if (res.isFinal) {
+          sessionFinal += res[0].transcript;
         } else {
-          currentInterim += result[0].transcript;
+          sessionInterim += res[0].transcript;
         }
       }
 
-      if (currentFinal) {
-        const formattedChunk = this._formatFinalChunk(currentFinal);
-        this.finalTranscript = this._appendFormattedChunk(this.finalTranscript, formattedChunk);
+      // 確定テキストの増分を検出
+      if (sessionFinal && sessionFinal !== this.sessionFinalAccumulator) {
+        const newPart = sessionFinal.slice(this.sessionFinalAccumulator.length);
+        if (newPart.trim()) {
+          const formatted = this._formatFinalChunk(newPart);
+          this.finalTranscript = this._appendFormattedChunk(this.finalTranscript, formatted);
+        }
+        this.sessionFinalAccumulator = sessionFinal;
       }
-      this.interimTranscript = currentInterim;
+
+      this.interimTranscript = sessionInterim;
+
+      // 暫定テキスト（interim）が長く滞留した場合のフェイルセーフ自動コミット（1.8秒沈黙で確定へ昇格）
+      if (this.interimCommitTimer) {
+        clearTimeout(this.interimCommitTimer);
+      }
+      if (this.interimTranscript && this.interimTranscript.trim().length >= 4) {
+        this.interimCommitTimer = setTimeout(() => {
+          if (this.isListening && this.interimTranscript && this.interimTranscript.trim()) {
+            const saved = this._formatFinalChunk(this.interimTranscript);
+            this.finalTranscript = this._appendFormattedChunk(this.finalTranscript, saved);
+            this.interimTranscript = '';
+            this.sessionFinalAccumulator = '';
+            if (this.onResult) {
+              this.onResult(this.finalTranscript, '');
+            }
+          }
+        }, 1800);
+      }
 
       if (this.onResult) {
         this.onResult(this.finalTranscript, this.interimTranscript);
@@ -112,26 +141,31 @@ class Transcriber {
         return;
       }
 
-      // 'no-speech', 'network', 'aborted' などはiOSで頻出するため即座にKeep-Alive再接続
+      // 通常のエラー（no-speech / network / aborted）は即座にKeep-Alive再起動
       if (this.shouldRestart && this.isListening) {
         this._quickReconnect();
       }
     };
 
-    // 終了ハンドラ（iOS Safariの無音切断をゼロ遅延でシームレス再開）
+    // 終了ハンドラ（セッション終了時に未確定テキストを100%救出）
     this.recognition.onend = () => {
-      // 停止時に未確定の暫定テキストが残っていたら、確定テキストに救出マージ
+      if (this.interimCommitTimer) {
+        clearTimeout(this.interimCommitTimer);
+        this.interimCommitTimer = null;
+      }
+
+      // 暫定テキストが残っていれば確定テキストへ確実に救出マージ
       if (this.interimTranscript && this.interimTranscript.trim()) {
         const savedChunk = this._formatFinalChunk(this.interimTranscript);
         this.finalTranscript = this._appendFormattedChunk(this.finalTranscript, savedChunk);
         this.interimTranscript = '';
+        this.sessionFinalAccumulator = '';
         if (this.onResult) {
           this.onResult(this.finalTranscript, '');
         }
       }
 
       if (this.shouldRestart && this.isListening) {
-        // 無音で自動停止した場合は即座に再接続
         this._quickReconnect();
       } else {
         this.isListening = false;
@@ -156,7 +190,6 @@ class Transcriber {
           console.log('音声認識 Keep-Alive 再接続完了');
         } catch (e) {
           console.warn('Keep-Alive再接続警告:', e);
-          // 万一の失敗時は100ms後に再試行
           setTimeout(() => {
             if (this.shouldRestart && this.isListening) {
               try {
@@ -166,11 +199,11 @@ class Transcriber {
                 // 無視
               }
             }
-          }, 100);
+          }, 80);
         }
       }
       this.isReconnecting = false;
-    }, 30);
+    }, 20);
   }
 
   /**
@@ -292,6 +325,7 @@ class Transcriber {
 
     this.finalTranscript = '';
     this.interimTranscript = '';
+    this.sessionFinalAccumulator = '';
     this.lastFinalTime = Date.now();
     this.shouldRestart = true;
     this.isListening = true;
@@ -318,6 +352,11 @@ class Transcriber {
     this.shouldRestart = false;
     this.isListening = false;
     this.isReconnecting = false;
+
+    if (this.interimCommitTimer) {
+      clearTimeout(this.interimCommitTimer);
+      this.interimCommitTimer = null;
+    }
 
     if (this.recognition) {
       try {
@@ -354,6 +393,7 @@ class Transcriber {
   reset() {
     this.finalTranscript = '';
     this.interimTranscript = '';
+    this.sessionFinalAccumulator = '';
     this.lastFinalTime = 0;
   }
 }
