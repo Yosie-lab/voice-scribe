@@ -16,7 +16,7 @@
   <link rel="apple-touch-icon" href="icons/icon-192.png">
 
   <!-- スタイルシート -->
-  <link rel="stylesheet" href="css/style.css?v=41">
+  <link rel="stylesheet" href="css/style.css?v=42">
 
   <!-- ファビコン -->
   <link rel="icon" href="icons/icon-192.png" type="image/png">
@@ -31,20 +31,17 @@
         <span class="app-logo-text">VoiceScribe</span>
       </div>
 
-      <!-- ヘッダー統合ナビゲーションタブ ＆ 設定ボタン -->
-      <div class="header-right-actions">
-        <nav class="header-nav-tabs" id="header-nav-tabs">
-          <button class="nav-tab-btn active" data-view="record" id="nav-record">
-            <span class="tab-icon">🎙️</span>
-            <span>録音</span>
-          </button>
-          <button class="nav-tab-btn" data-view="list" id="nav-list">
-            <span class="tab-icon">📂</span>
-            <span>一覧</span>
-          </button>
-        </nav>
-        <button class="settings-header-btn" id="header-settings-btn" title="AI・アプリ設定" aria-label="設定">⚙️</button>
-      </div>
+      <!-- ヘッダー統合ナビゲーションタブ -->
+      <nav class="header-nav-tabs" id="header-nav-tabs">
+        <button class="nav-tab-btn active" data-view="record" id="nav-record">
+          <span class="tab-icon">🎙️</span>
+          <span>録音</span>
+        </button>
+        <button class="nav-tab-btn" data-view="list" id="nav-list">
+          <span class="tab-icon">📂</span>
+          <span>一覧</span>
+        </button>
+      </nav>
     </header>
 
     <!-- ===== 録音ビュー ===== -->
@@ -210,7 +207,6 @@
 
         <div class="detail-actions-bar">
           <div class="export-actions">
-            <button class="export-btn ai-action" id="detail-ai-transcribe-btn" title="録音音声からGemini AIで高精度に文字起こし・要約">✨ AI文字起こし</button>
             <button class="export-btn primary-action" id="detail-copy-btn" title="表示中のテキストをコピー">📋 コピー</button>
             <button class="export-btn" id="export-text-btn" title="テキストファイルとして保存">📄 保存</button>
             <button class="export-btn" id="export-audio-btn" title="音声ファイルを保存">🎵 音声</button>
@@ -233,73 +229,8 @@
       </div>
     </section>
 
-    <!-- ===== AI処理中フルスクリーンオーバーレイ ===== -->
-    <div class="ai-processing-overlay" id="ai-processing-overlay">
-      <div class="ai-processing-card">
-        <div class="ai-spinner">✨</div>
-        <div class="ai-processing-title" id="ai-processing-title">Gemini AI 解析中...</div>
-        <div class="ai-processing-desc" id="ai-processing-desc">音声を高精度に文字起こし＆要約しています</div>
-      </div>
-    </div>
-
     <!-- ===== トースト通知コンテナ ===== -->
     <div class="toast-container" id="toast-container"></div>
-
-    <!-- ===== ⚙️ 設定モーダル (Gemini API) ===== -->
-    <div class="modal-overlay" id="settings-modal-overlay">
-      <div class="modal-card settings-modal-card">
-        <div class="settings-modal-header">
-          <div class="settings-modal-title">⚙️ AI・アプリ設定</div>
-          <button class="settings-modal-close" id="settings-modal-close" aria-label="閉じる">✕</button>
-        </div>
-
-        <div class="settings-modal-body">
-          <div class="settings-section">
-            <label class="settings-label" for="gemini-api-key-input">
-              <span>🔑 Google Gemini API キー</span>
-              <span class="settings-badge-free">完全無料</span>
-            </label>
-            <div class="settings-input-wrapper">
-              <input
-                type="password"
-                id="gemini-api-key-input"
-                class="settings-input"
-                placeholder="AIzaSy...（APIキーを貼り付け）"
-                autocomplete="off"
-                spellcheck="false"
-              >
-              <button class="settings-toggle-visibility-btn" id="toggle-key-visibility-btn" title="表示/非表示">👁️</button>
-            </div>
-            <p class="settings-hint">
-              Google AI Studio で無料取得できるAPIキーを登録すると、録音停止時に<b>抜け落ちのない100%完璧な文字起こし＆要約</b>が自動生成されます。
-            </p>
-            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" class="settings-link">
-              👉 Google AI Studio で無料APIキーを取得（カード不要）
-            </a>
-          </div>
-
-          <div class="settings-section">
-            <div class="settings-row">
-              <div>
-                <div class="settings-row-title">✨ 録音終了時の自動AI文字起こし</div>
-                <div class="settings-row-desc">録音停止時に自動でGemini高精度文字起こしを実行</div>
-              </div>
-              <label class="toggle-switch">
-                <input type="checkbox" id="auto-gemini-toggle" checked>
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-          </div>
-
-          <div class="settings-status-box" id="settings-status-box"></div>
-        </div>
-
-        <div class="settings-modal-footer">
-          <button class="settings-btn secondary" id="test-gemini-btn">🔄 接続テスト</button>
-          <button class="settings-btn primary" id="save-settings-btn">💾 保存する</button>
-        </div>
-      </div>
-    </div>
 
     <!-- ===== 確認モーダル ===== -->
     <div class="modal-overlay" id="modal-overlay">
@@ -317,13 +248,12 @@
   </div>
 
   <!-- ===== JavaScript モジュール ===== -->
-  <script src="js/storage.js?v=41"></script>
-  <script src="js/recorder.js?v=41"></script>
-  <script src="js/transcriber.js?v=41"></script>
-  <script src="js/summarizer.js?v=41"></script>
-  <script src="js/gemini.js?v=41"></script>
-  <script src="js/visualizer.js?v=41"></script>
-  <script src="js/ui.js?v=41"></script>
-  <script src="js/app.js?v=41"></script>
+  <script src="js/storage.js?v=42"></script>
+  <script src="js/recorder.js?v=42"></script>
+  <script src="js/transcriber.js?v=42"></script>
+  <script src="js/summarizer.js?v=42"></script>
+  <script src="js/visualizer.js?v=42"></script>
+  <script src="js/ui.js?v=42"></script>
+  <script src="js/app.js?v=42"></script>
 </body>
 </html>

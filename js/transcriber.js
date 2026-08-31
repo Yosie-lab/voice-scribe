@@ -1,7 +1,6 @@
 /**
- * VoiceScribe — 音声認識（文字起こし）モジュール (Transcriber)
- * Web Speech API (webkitSpeechRecognition) を利用した高精度リアルタイム文字起こし
- * iOS Safari のマイク競合・暫定テキスト消失・セッション切断を完全に防ぐ高精度エンジン
+ * VoiceScribe — 音声認識モジュール (Transcriber)
+ * iOS Safari 標準の Web Speech API を極限までシンプルに、素直に動作させる高精度設計
  */
 
 class Transcriber {
@@ -12,12 +11,6 @@ class Transcriber {
     this.language = 'ja-JP';
     this.finalTranscript = '';
     this.interimTranscript = '';
-    this.lastFinalTime = 0;
-    this.isReconnecting = false;
-    this.sessionFinalAccumulator = ''; // 現在のセッション内の確定分
-
-    // 暫定テキストの自動コミットタイマー
-    this.interimCommitTimer = null;
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
@@ -35,7 +28,7 @@ class Transcriber {
     if (!SpeechRecognition) {
       return {
         available: false,
-        reason: 'お使いのブラウザは音声認識に対応していません。iOSの場合はSafariでご利用ください。'
+        reason: 'お使いのブラウザは音声認識に対応していません。Safariでご利用ください。'
       };
     }
 
@@ -50,22 +43,19 @@ class Transcriber {
   }
 
   /**
-   * 音声認識インスタンスを初期化（iOS Safari最適化）
+   * 音声認識インスタンスを初期化（Safari最適化のシンプル構造）
    */
   init() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
 
-    // 既存インスタンスの完全破棄
     if (this.recognition) {
       try {
         this.recognition.onresult = null;
         this.recognition.onerror = null;
         this.recognition.onend = null;
         this.recognition.abort();
-      } catch {
-        // 無視
-      }
+      } catch {}
       this.recognition = null;
     }
 
@@ -74,51 +64,30 @@ class Transcriber {
     this.recognition.interimResults = true;
     this.recognition.lang = this.language;
     this.recognition.maxAlternatives = 1;
-    this.sessionFinalAccumulator = '';
 
-    // 結果受信ハンドラ（全履歴フルスキャン方式で取りこぼしゼロ）
+    // 結果受信ハンドラ
     this.recognition.onresult = (event) => {
-      let sessionFinal = '';
-      let sessionInterim = '';
+      let interim = '';
 
-      for (let i = 0; i < event.results.length; i++) {
-        const res = event.results[i];
-        if (res.isFinal) {
-          sessionFinal += res[0].transcript;
-        } else {
-          sessionInterim += res[0].transcript;
-        }
-      }
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        const text = result[0].transcript;
 
-      // 確定テキストの増分を検出
-      if (sessionFinal && sessionFinal !== this.sessionFinalAccumulator) {
-        const newPart = sessionFinal.slice(this.sessionFinalAccumulator.length);
-        if (newPart.trim()) {
-          const formatted = this._formatFinalChunk(newPart);
-          this.finalTranscript = this._appendFormattedChunk(this.finalTranscript, formatted);
-        }
-        this.sessionFinalAccumulator = sessionFinal;
-      }
-
-      this.interimTranscript = sessionInterim;
-
-      // 暫定テキスト（interim）が長く滞留した場合のフェイルセーフ自動コミット（1.8秒沈黙で確定へ昇格）
-      if (this.interimCommitTimer) {
-        clearTimeout(this.interimCommitTimer);
-      }
-      if (this.interimTranscript && this.interimTranscript.trim().length >= 4) {
-        this.interimCommitTimer = setTimeout(() => {
-          if (this.isListening && this.interimTranscript && this.interimTranscript.trim()) {
-            const saved = this._formatFinalChunk(this.interimTranscript);
-            this.finalTranscript = this._appendFormattedChunk(this.finalTranscript, saved);
-            this.interimTranscript = '';
-            this.sessionFinalAccumulator = '';
-            if (this.onResult) {
-              this.onResult(this.finalTranscript, '');
-            }
+        if (result.isFinal) {
+          // 確定テキストに自然な句読点を補正して追加
+          const formatted = this._formatFinalText(text);
+          if (this.finalTranscript) {
+            const sep = this.language === 'en-US' ? ' ' : '';
+            this.finalTranscript += sep + formatted;
+          } else {
+            this.finalTranscript = formatted;
           }
-        }, 1800);
+        } else {
+          interim += text;
+        }
       }
+
+      this.interimTranscript = interim;
 
       if (this.onResult) {
         this.onResult(this.finalTranscript, this.interimTranscript);
@@ -128,45 +97,44 @@ class Transcriber {
     // エラーハンドラ
     this.recognition.onerror = (event) => {
       console.warn('音声認識イベント:', event.error);
-
       if (event.error === 'not-allowed') {
-        if (this.onError) this.onError('マイクの使用が許可されていません。設定をご確認ください。');
+        if (this.onError) this.onError('マイクの使用が許可されていません。');
         this.stop();
-        return;
-      }
-
-      if (event.error === 'audio-capture') {
+      } else if (event.error === 'audio-capture') {
         if (this.onError) this.onError('マイクにアクセスできませんでした。');
         this.stop();
-        return;
       }
-
-      // 通常のエラー（no-speech / network / aborted）は即座にKeep-Alive再起動
-      if (this.shouldRestart && this.isListening) {
-        this._quickReconnect();
-      }
+      // 通常の無音(no-speech)などは再起動
     };
 
-    // 終了ハンドラ（セッション終了時に未確定テキストを100%救出）
+    // 終了ハンドラ（無音自動停止時にシームレス再開）
     this.recognition.onend = () => {
-      if (this.interimCommitTimer) {
-        clearTimeout(this.interimCommitTimer);
-        this.interimCommitTimer = null;
-      }
-
-      // 暫定テキストが残っていれば確定テキストへ確実に救出マージ
+      // 終了時に未確定テキストがあれば救出
       if (this.interimTranscript && this.interimTranscript.trim()) {
-        const savedChunk = this._formatFinalChunk(this.interimTranscript);
-        this.finalTranscript = this._appendFormattedChunk(this.finalTranscript, savedChunk);
+        const saved = this._formatFinalText(this.interimTranscript);
+        if (this.finalTranscript) {
+          const sep = this.language === 'en-US' ? ' ' : '';
+          this.finalTranscript += sep + saved;
+        } else {
+          this.finalTranscript = saved;
+        }
         this.interimTranscript = '';
-        this.sessionFinalAccumulator = '';
         if (this.onResult) {
           this.onResult(this.finalTranscript, '');
         }
       }
 
       if (this.shouldRestart && this.isListening) {
-        this._quickReconnect();
+        setTimeout(() => {
+          if (this.shouldRestart && this.isListening) {
+            try {
+              this.init();
+              this.recognition.start();
+            } catch (e) {
+              console.warn('再接続警告:', e);
+            }
+          }
+        }, 50);
       } else {
         this.isListening = false;
         if (this.onEnd) this.onEnd();
@@ -175,128 +143,35 @@ class Transcriber {
   }
 
   /**
-   * ゼロ遅延で音声認識を即時再起動（Keep-Alive）
-   * @private
-   */
-  _quickReconnect() {
-    if (!this.shouldRestart || !this.isListening || this.isReconnecting) return;
-
-    this.isReconnecting = true;
-    setTimeout(() => {
-      if (this.shouldRestart && this.isListening) {
-        try {
-          this.init();
-          this.recognition.start();
-          console.log('音声認識 Keep-Alive 再接続完了');
-        } catch (e) {
-          console.warn('Keep-Alive再接続警告:', e);
-          setTimeout(() => {
-            if (this.shouldRestart && this.isListening) {
-              try {
-                this.init();
-                this.recognition.start();
-              } catch (err) {
-                // 無視
-              }
-            }
-          }, 80);
-        }
-      }
-      this.isReconnecting = false;
-    }, 20);
-  }
-
-  /**
-   * 確定した発話チャンクに自動で「、」「。」「？」や改行を付与
-   * @param {string} rawChunk
+   * 確定した文にシンプルな句読点を付与
+   * @param {string} raw
    * @returns {string}
    * @private
    */
-  _formatFinalChunk(rawChunk) {
-    let text = (rawChunk || '').trim();
+  _formatFinalText(raw) {
+    let text = (raw || '').trim();
     if (!text) return '';
 
     if (this.language === 'ja-JP') {
-      // 1. 接続詞の後ろに読点「、」を補完
-      text = text.replace(
-        /(^|[。！？!\?\n\s])(しかし|また|例えば|そして|ところで|なお|つまり|要するに|まず|次に|最後に|実は|一般的に|基本的に|結果として|一方で|したがって|さらに|ただし|なぜなら|具体的には|ちなみに)(?![、，,\s。！？!\?])/g,
-        '$1$2、'
-      );
+      // 接続詞の後ろに「、」
+      text = text.replace(/(^|[。\s])(しかし|また|例えば|そして|ところで|なお|つまり|要するに|まず|次に|最後に|実は)(?![、\s])/g, '$1$2、');
 
-      // 2. 節の接続助詞の後ろに読点「、」を補完
-      text = text.replace(
-        /(ので|から|けれど|けれども|けど|たら|なら|ば|ても|ながら|ものの)(?![、，,\s。！？!\?])/g,
-        '$1、'
-      );
-
-      // 3. 過剰読点の整理
-      text = text.replace(/、+/g, '、');
-      text = text.replace(/([。！？!\?])、/g, '$1');
-      text = text.replace(/^、/, '');
-
-      // 4. 文末の句点（。）または疑問符（？）
+      // 文末に「。」または「？」
       if (!/[。！？!\?」』）\)]$/.test(text)) {
-        if (/(ですか|ますか|でしょうか|なの|なのか|ですかね|かな|かしら|かい|誰|何|いつ|どこ|なぜ|どうして|どう)$/.test(text)) {
+        if (/(ですか|ますか|でしょうか|なの|なのか|ですかね|かな|かい|誰|何|いつ|どこ|なぜ|どう)$/.test(text)) {
           text += '？';
         } else {
           text += '。';
         }
       }
     } else {
-      // 英語（en-US）
       text = text.charAt(0).toUpperCase() + text.slice(1);
-      text = text.replace(/^(However|Furthermore|Therefore|Moreover|For example|First|Next|Finally|Actually|In addition)(?!,)/i, '$1,');
-
       if (!/[.!?]$/.test(text)) {
-        if (/^(who|what|when|where|why|how|is|are|do|does|did|can|could|would|should|will|have|has)\b/i.test(text)) {
-          text += '?';
-        } else {
-          text += '.';
-        }
+        text += '.';
       }
     }
 
     return text;
-  }
-
-  /**
-   * 既存の文字起こしに新しいチャンクを結合
-   * @param {string} currentText
-   * @param {string} newChunk
-   * @returns {string}
-   * @private
-   */
-  _appendFormattedChunk(currentText, newChunk) {
-    if (!currentText || !currentText.trim()) {
-      this.lastFinalTime = Date.now();
-      return newChunk;
-    }
-
-    const trimmedFull = currentText.trimEnd();
-    const now = Date.now();
-    const pauseDuration = this.lastFinalTime ? now - this.lastFinalTime : 0;
-    this.lastFinalTime = now;
-
-    // 現在の段落を取得
-    const paragraphs = trimmedFull.split(/\n\s*\n/);
-    const lastParagraph = paragraphs[paragraphs.length - 1] || '';
-    const sentenceCount = (lastParagraph.match(/[。！？!\?]/g) || []).length;
-    const lastParaLength = lastParagraph.length;
-
-    // 2〜4文（100〜150文字程度）または長めのポーズで空行段落分け
-    const shouldParagraphBreak =
-      (sentenceCount >= 3 && lastParaLength >= 90) ||
-      lastParaLength >= 140 ||
-      (pauseDuration >= 1400 && /[。！？!\?」』）\)]$/.test(trimmedFull));
-
-    if (shouldParagraphBreak && /[。！？!\?」』）\)]$/.test(trimmedFull)) {
-      return `${trimmedFull}\n\n${newChunk}`;
-    } else if (/[。！？!\?」』）\)]$/.test(trimmedFull)) {
-      return `${trimmedFull}\n${newChunk}`;
-    } else {
-      const sep = this.language === 'en-US' ? ' ' : '';
-      return `${trimmedFull}${sep}${newChunk}`;
-    }
   }
 
   /**
@@ -311,7 +186,7 @@ class Transcriber {
   }
 
   /**
-   * 文字起こしを開始（タップ直後に即座に同期起動）
+   * 文字起こしを開始
    * @returns {boolean}
    */
   start() {
@@ -322,14 +197,10 @@ class Transcriber {
     }
 
     this.init();
-
     this.finalTranscript = '';
     this.interimTranscript = '';
-    this.sessionFinalAccumulator = '';
-    this.lastFinalTime = Date.now();
     this.shouldRestart = true;
     this.isListening = true;
-    this.isReconnecting = false;
 
     try {
       this.recognition.start();
@@ -337,9 +208,7 @@ class Transcriber {
       return true;
     } catch (error) {
       console.warn('文字起こしstart警告:', error);
-      if (error.name === 'InvalidStateError') {
-        return true;
-      }
+      if (error.name === 'InvalidStateError') return true;
       this.isListening = false;
       return false;
     }
@@ -351,34 +220,22 @@ class Transcriber {
   stop() {
     this.shouldRestart = false;
     this.isListening = false;
-    this.isReconnecting = false;
-
-    if (this.interimCommitTimer) {
-      clearTimeout(this.interimCommitTimer);
-      this.interimCommitTimer = null;
-    }
 
     if (this.recognition) {
       try {
         this.recognition.stop();
-      } catch {
-        // 無視
-      }
+      } catch {}
     }
     console.log('音声文字起こし停止');
   }
 
   /**
-   * 現在の文字起こしテキストを取得（確定テキスト＋暫定テキストを合成・整形）
+   * 現在の文字起こしテキストを取得
    * @returns {string}
    */
   getFullTranscript() {
     const final = (this.finalTranscript || '').trim();
-    let interim = (this.interimTranscript || '').trim();
-
-    if (interim) {
-      interim = this._formatFinalChunk(interim);
-    }
+    const interim = (this.interimTranscript || '').trim();
 
     if (final && interim) {
       const sep = this.language === 'en-US' ? ' ' : '';
@@ -393,8 +250,6 @@ class Transcriber {
   reset() {
     this.finalTranscript = '';
     this.interimTranscript = '';
-    this.sessionFinalAccumulator = '';
-    this.lastFinalTime = 0;
   }
 }
 
