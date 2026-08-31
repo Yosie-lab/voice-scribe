@@ -128,6 +128,12 @@ class VoiceScribeApp {
     this.recorder.onError = (message) => {
       this.ui.showToast(message, 'error');
     };
+
+    // 音声認識エラーコールバック
+    this.transcriber.onError = (message) => {
+      console.warn('文字起こしエラー通知:', message);
+      this.ui.showToast(message, 'info');
+    };
   }
 
   /**
