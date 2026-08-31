@@ -97,7 +97,14 @@ class VoiceScribeApp {
           if (copiedMsg) copiedMsg.style.display = 'block';
         });
       }
-      return; // スタンドアロンモードでは以降のチェックをスキップ
+
+      // 「このまま使う」ボタン — オーバーレイを閉じてアプリを使用可能にする
+      const continueBtn = document.getElementById('standalone-continue-btn');
+      if (continueBtn) {
+        continueBtn.addEventListener('click', () => {
+          redirectOverlay.style.display = 'none';
+        });
+      }
     }
 
     const { available, reason } = Transcriber.checkAvailability();
