@@ -352,30 +352,12 @@ class UIManager {
             <!-- アクション -->
             <div class="card-actions">
               <span class="card-arrow-icon" title="詳細を見る">›</span>
-              <button class="card-action-btn delete" data-action="delete" data-id="${rec.id}" title="削除">🗑️</button>
+              <button class="card-action-btn card-delete-btn delete" data-action="delete" data-id="${rec.id}" title="削除" aria-label="録音を削除">🗑️</button>
             </div>
           </div>
         `;
       })
       .join('');
-
-    // カードクリックで詳細へ
-    listEl.querySelectorAll('.recording-card').forEach((card) => {
-      card.addEventListener('click', (e) => {
-        if (e.target.closest('[data-action="delete"]')) return;
-        const id = card.dataset.id;
-        if (callbacks.onDetail) callbacks.onDetail(id);
-      });
-    });
-
-    // 削除ボタン
-    listEl.querySelectorAll('[data-action="delete"]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const id = btn.dataset.id;
-        if (callbacks.onDelete) callbacks.onDelete(id);
-      });
-    });
   }
 
   /**

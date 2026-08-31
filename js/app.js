@@ -403,12 +403,13 @@ class VoiceScribeApp {
     const listContainer = document.getElementById('recordings-list');
     if (listContainer) {
       listContainer.addEventListener('click', (e) => {
-        const deleteBtn = e.target.closest('.card-delete-btn');
+        const deleteBtn = e.target.closest('.card-delete-btn, [data-action="delete"]');
         if (deleteBtn) {
           e.stopPropagation();
-          const card = deleteBtn.closest('.recording-card');
-          if (card && card.dataset.id) {
-            this._confirmDelete(card.dataset.id);
+          e.preventDefault();
+          const id = deleteBtn.dataset.id || deleteBtn.closest('.recording-card')?.dataset?.id;
+          if (id) {
+            this._confirmDelete(id);
           }
           return;
         }
