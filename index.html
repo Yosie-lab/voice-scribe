@@ -189,25 +189,42 @@
         </div>
       </div>
 
-      <!-- 文字起こしテキスト（全文表示） -->
+      <!-- 文字起こしテキスト（要約・まとめ＆全文タブ切り替え） -->
       <div class="detail-transcript" id="detail-transcript">
         <div class="detail-transcript-header">
-          <div class="detail-transcript-title-box">
-            <span class="detail-transcript-title">📝 文字起こしテキスト</span>
+          <div class="detail-tab-switcher">
+            <button class="detail-tab-btn active" id="tab-summary-btn" data-detail-tab="summary">✨ 要約・まとめ</button>
+            <button class="detail-tab-btn" id="tab-full-btn" data-detail-tab="full">📝 全文</button>
+          </div>
+          <div class="detail-header-right">
             <span class="detail-char-count-badge" id="detail-char-count">0文字</span>
             <div class="font-size-controls">
               <button class="font-btn" id="detail-font-decrease-btn" title="文字を小さく">A-</button>
               <button class="font-btn" id="detail-font-increase-btn" title="文字を大きく">A+</button>
             </div>
           </div>
+        </div>
+
+        <div class="detail-actions-bar">
           <div class="export-actions">
-            <button class="export-btn primary-action" id="detail-copy-btn" title="文字起こしテキストをコピー">📋 コピー</button>
+            <button class="export-btn primary-action" id="detail-copy-btn" title="表示中のテキストをコピー">📋 コピー</button>
             <button class="export-btn" id="export-text-btn" title="テキストファイルとして保存">📄 保存</button>
             <button class="export-btn" id="export-audio-btn" title="音声ファイルを保存">🎵 音声</button>
           </div>
         </div>
-        <div class="detail-transcript-text" id="detail-transcript-text">
-          テキストなし
+
+        <!-- 1. 要約・まとめタブ表示部 -->
+        <div class="detail-tab-content active" id="detail-tab-summary">
+          <div class="summary-box" id="summary-box">
+            <div class="summary-empty">要約を生成中...</div>
+          </div>
+        </div>
+
+        <!-- 2. 全文タブ表示部 -->
+        <div class="detail-tab-content" id="detail-tab-full">
+          <div class="detail-transcript-text" id="detail-transcript-text">
+            テキストなし
+          </div>
         </div>
       </div>
     </section>
@@ -231,11 +248,12 @@
   </div>
 
   <!-- ===== JavaScript モジュール ===== -->
-  <script src="js/storage.js?v=31"></script>
-  <script src="js/recorder.js?v=31"></script>
-  <script src="js/transcriber.js?v=31"></script>
-  <script src="js/visualizer.js?v=31"></script>
-  <script src="js/ui.js?v=31"></script>
-  <script src="js/app.js?v=31"></script>
+  <script src="js/storage.js?v=32"></script>
+  <script src="js/recorder.js?v=32"></script>
+  <script src="js/transcriber.js?v=32"></script>
+  <script src="js/summarizer.js?v=32"></script>
+  <script src="js/visualizer.js?v=32"></script>
+  <script src="js/ui.js?v=32"></script>
+  <script src="js/app.js?v=32"></script>
 </body>
 </html>

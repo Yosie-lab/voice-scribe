@@ -333,7 +333,7 @@ class VoiceScribeApp {
   }
 
   /**
-   * 録音タイトルを自動生成
+   * 録音タイトルを自動生成（スマート要約見出しを活用）
    * @param {string} transcript
    * @param {string} language
    * @returns {string}
@@ -349,6 +349,12 @@ class VoiceScribeApp {
     });
 
     if (transcript && transcript.length > 0) {
+      if (window.TextSummarizer) {
+        const summary = TextSummarizer.summarize(transcript, language);
+        if (summary && summary.headline) {
+          return summary.headline.replace(/^📌\s*/, '');
+        }
+      }
       const firstLine = transcript.split(/[。\.\n！？\!\?]/)[0].trim();
       if (firstLine.length > 0) {
         return firstLine.substring(0, 25) + (firstLine.length > 25 ? '...' : '');
@@ -687,7 +693,7 @@ class VoiceScribeApp {
   }
 
   /**
-   * 詳細画面のテキストをクリップボードにコピー
+   * 詳細画面のテキストをクリップボードにコピー（表示中のタブに応じた内容）
    * @private
    */
   async _copyDetailText() {
@@ -700,9 +706,21 @@ class VoiceScribeApp {
         return;
       }
 
-      const success = await UIManager.copyToClipboard(text);
+      let copyTargetText = text;
+      let toastMsg = '📋 全文テキストをコピーしました';
+
+      // 要約タブがアクティブな場合は要約整形テキストをコピー
+      if (this.ui && this.ui.currentDetailTab === 'summary' && window.TextSummarizer) {
+        const summary = TextSummarizer.summarize(text, recording.language);
+        if (summary && summary.formattedText) {
+          copyTargetText = summary.formattedText;
+          toastMsg = '✨ 要約まとめテキストをコピーしました';
+        }
+      }
+
+      const success = await UIManager.copyToClipboard(copyTargetText);
       if (success) {
-        this.ui.showToast('📋 全文テキストをコピーしました', 'success');
+        this.ui.showToast(toastMsg, 'success');
       } else {
         this.ui.showToast('コピーに失敗しました。長押しで選択してください。', 'error');
       }
