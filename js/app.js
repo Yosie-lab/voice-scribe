@@ -19,6 +19,7 @@ class VoiceScribeApp {
     this.currentAudio = null;
     this.currentAudioUrl = null;
     this.playbackInterval = null;
+    this.wakeLock = null; // 画面自動スリープ防止ロック
   }
 
   /**
@@ -44,6 +45,13 @@ class VoiceScribeApp {
       this._setupRecordView();
       this._setupListView();
       this._setupDetailView();
+
+      // 画面スリープ防止の可視性変更リスナー
+      document.addEventListener('visibilitychange', async () => {
+        if (document.visibilityState === 'visible' && this.isRecording) {
+          await this._requestWakeLock();
+        }
+      });
 
       // 音声認識対応状況の確認
       this._checkTranscriptionSupport();
@@ -189,6 +197,9 @@ class VoiceScribeApp {
       console.warn('MediaRecorder start warning:', recErr);
     }
 
+    // 3. 画面自動スリープ防止ロック（Wake Lock）を取得
+    await this._requestWakeLock();
+
     // 言語ボタンを一時無効化
     document.querySelectorAll('.lang-btn').forEach((btn) => {
       btn.style.pointerEvents = 'none';
@@ -204,6 +215,9 @@ class VoiceScribeApp {
    */
   async _stopRecording() {
     try {
+      // 画面スリープ防止ロックを解除
+      await this._releaseWakeLock();
+
       // 1. 停止前に文字起こしテキストを確実に取得
       let transcript = (this.transcriber.getFullTranscript() || '').trim();
 
@@ -793,6 +807,43 @@ class VoiceScribeApp {
     } catch (error) {
       console.error('音声エクスポートエラー:', error);
       this.ui.showToast('ダウンロードに失敗しました。', 'error');
+    }
+  }
+
+  /**
+   * 画面スリープ防止ロック（Screen Wake Lock）を取得
+   * @private
+   */
+  async _requestWakeLock() {
+    if ('wakeLock' in navigator) {
+      try {
+        if (!this.wakeLock) {
+          this.wakeLock = await navigator.wakeLock.request('screen');
+          console.log('Screen Wake Lock 取得成功（画面スリープ防止中）');
+          this.wakeLock.addEventListener('release', () => {
+            console.log('Screen Wake Lock 解除');
+            this.wakeLock = null;
+          });
+        }
+      } catch (err) {
+        console.warn('Screen Wake Lock 取得警告:', err);
+      }
+    }
+  }
+
+  /**
+   * 画面スリープ防止ロック（Screen Wake Lock）を解放
+   * @private
+   */
+  async _releaseWakeLock() {
+    if (this.wakeLock) {
+      try {
+        await this.wakeLock.release();
+        this.wakeLock = null;
+        console.log('Screen Wake Lock 手動解放完了');
+      } catch (err) {
+        console.warn('Screen Wake Lock 解除警告:', err);
+      }
     }
   }
 }
