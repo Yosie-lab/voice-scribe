@@ -16,7 +16,7 @@
   <link rel="apple-touch-icon" href="icons/icon-192.png">
 
   <!-- スタイルシート -->
-  <link rel="stylesheet" href="css/style.css?v=49">
+  <link rel="stylesheet" href="css/style.css?v=50">
 
   <!-- ファビコン -->
   <link rel="icon" href="icons/icon-192.png" type="image/png">
@@ -82,13 +82,27 @@
         </div>
       </div>
 
-      <!-- ホーム画面（PWA）起動時のSafari誘導バナー -->
-      <div class="standalone-banner" id="standalone-banner" style="display:none;">
-        <span class="standalone-icon">🧭</span>
-        <div class="standalone-text">
-          <b>Safariブラウザ</b>で開くと、音声文字起こしが快適に動作します
+      <!-- ホーム画面（PWA）起動時のSafari誘導 全画面オーバーレイ -->
+      <div class="standalone-redirect-overlay" id="standalone-redirect-overlay" style="display:none;">
+        <div class="standalone-redirect-card">
+          <div class="standalone-redirect-icon">🧭</div>
+          <div class="standalone-redirect-title">Safariブラウザで開いてください</div>
+          <div class="standalone-redirect-desc">
+            ホーム画面アプリ内では音声文字起こしが制限されます。<br>
+            下のボタンでURLをコピーし、<b>Safariを開いてアドレスバーに貼り付けて</b>ください。
+          </div>
+          <button class="standalone-copy-url-btn" id="standalone-copy-url-btn">📋 URLをコピーする</button>
+          <div class="standalone-copied-msg" id="standalone-copied-msg" style="display:none;">✅ コピーしました！Safariを開いて貼り付けてください</div>
+          <div class="standalone-steps">
+            <div class="standalone-step">① 上のボタンをタップ</div>
+            <div class="standalone-step">② Safariアプリを開く</div>
+            <div class="standalone-step">③ アドレスバーに長押しペースト</div>
+          </div>
+          <div class="standalone-tip">
+            💡 <b>次回から一発で開くには：</b><br>
+            このアイコンをホーム画面から削除し、Safariで開いた状態で再度「ホーム画面に追加」してください。
+          </div>
         </div>
-        <a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener noreferrer external" class="open-safari-btn" id="open-safari-link">🚀 Safariで開く</a>
       </div>
 
       <!-- 文字起こし非対応メッセージ -->
@@ -287,12 +301,12 @@
   </div>
 
   <!-- ===== JavaScript モジュール ===== -->
-  <script src="js/storage.js?v=49"></script>
-  <script src="js/recorder.js?v=49"></script>
-  <script src="js/transcriber.js?v=49"></script>
-  <script src="js/whisper.js?v=49"></script>
-  <script src="js/visualizer.js?v=49"></script>
-  <script src="js/ui.js?v=49"></script>
-  <script src="js/app.js?v=49"></script>
+  <script src="js/storage.js?v=50"></script>
+  <script src="js/recorder.js?v=50"></script>
+  <script src="js/transcriber.js?v=50"></script>
+  <script src="js/whisper.js?v=50"></script>
+  <script src="js/visualizer.js?v=50"></script>
+  <script src="js/ui.js?v=50"></script>
+  <script src="js/app.js?v=50"></script>
 </body>
 </html>

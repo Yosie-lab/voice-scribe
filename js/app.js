@@ -68,24 +68,42 @@ class VoiceScribeApp {
     const isStandalone = window.navigator.standalone === true ||
       window.matchMedia('(display-mode: standalone)').matches;
 
-    const standaloneBanner = document.getElementById('standalone-banner');
-    const openSafariLink = document.getElementById('open-safari-link');
+    const redirectOverlay = document.getElementById('standalone-redirect-overlay');
+    const copyUrlBtn = document.getElementById('standalone-copy-url-btn');
+    const copiedMsg = document.getElementById('standalone-copied-msg');
 
-    if (isStandalone && standaloneBanner) {
-      standaloneBanner.style.display = 'flex';
+    if (isStandalone && redirectOverlay) {
+      redirectOverlay.style.display = 'flex';
 
-      if (openSafariLink) {
-        openSafariLink.addEventListener('click', (e) => {
-          e.preventDefault();
-          window.open('https://yosie-lab.github.io/voice-scribe/', '_blank');
+      // URLコピーボタン
+      if (copyUrlBtn) {
+        copyUrlBtn.addEventListener('click', async () => {
+          const appUrl = 'https://yosie-lab.github.io/voice-scribe/';
+          try {
+            await navigator.clipboard.writeText(appUrl);
+          } catch {
+            // フォールバック: テキストエリアコピー
+            const ta = document.createElement('textarea');
+            ta.value = appUrl;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+          }
+          copyUrlBtn.textContent = '✅ コピー済み！';
+          copyUrlBtn.style.background = 'rgba(16, 185, 129, 0.8)';
+          if (copiedMsg) copiedMsg.style.display = 'block';
         });
       }
+      return; // スタンドアロンモードでは以降のチェックをスキップ
     }
 
     const { available, reason } = Transcriber.checkAvailability();
     const unsupportedEl = document.getElementById('transcript-unsupported');
 
-    if (!available && unsupportedEl && !isStandalone) {
+    if (!available && unsupportedEl) {
       unsupportedEl.classList.add('visible');
       const msgEl = unsupportedEl.querySelector('.unsupported-msg');
       if (msgEl) msgEl.textContent = reason;
