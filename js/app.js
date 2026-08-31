@@ -1,6 +1,6 @@
 /**
- * VoiceScribe — メインアプリケーションコントローラー
- * 各モジュール（Storage, Recorder, Transcriber, Visualizer, UI）を統合管理
+ * VoiceScribe — メインアプリケーションコントローラー (VoiceScribeApp)
+ * 各モジュール（Storage, Recorder, Transcriber, Whisper, Visualizer, UI）を統合管理
  */
 
 class VoiceScribeApp {
@@ -65,7 +65,6 @@ class VoiceScribeApp {
    * @private
    */
   _checkTranscriptionSupport() {
-    // iOSスタンドアロンPWAモードの検知
     const isStandalone = window.navigator.standalone === true ||
       window.matchMedia('(display-mode: standalone)').matches;
 
@@ -85,7 +84,7 @@ class VoiceScribeApp {
   }
 
   // =====================================
-  // 録音ビューの制御
+  // 1. 録音画面 (Record View) 制御
   // =====================================
 
   /**
@@ -173,7 +172,7 @@ class VoiceScribeApp {
       console.warn('SpeechRecognition start warning:', e);
     }
 
-    // 2. 音声録音（MediaRecorder）を起動（失敗時も文字起こしは継続）
+    // 2. 音声録音（MediaRecorder）を起動
     try {
       const stream = await this.recorder.start();
       if (this.visualizer && stream) {
@@ -194,15 +193,13 @@ class VoiceScribeApp {
   }
 
   /**
-   * 録音を停止して保存（完全フェイルセーフ）
+   * 録音を停止して保存（Groq Whisper連携付き）
    * @private
    */
   async _stopRecording() {
     try {
-      // 1. 停止前に文字起こしテキストを確実に取得
+      // 1. 停止前にSafari文字起こしテキストを取得
       let transcript = (this.transcriber.getFullTranscript() || '').trim();
-
-      // 画面上のテキストからもフォールバック取得
       if (!transcript) {
         const textEl = document.getElementById('transcript-text');
         if (textEl) {
@@ -252,7 +249,7 @@ class VoiceScribeApp {
       const language = activeLangBtn ? activeLangBtn.dataset.lang : 'ja-JP';
       const duration = this.recorder.getElapsedTime() || 0;
 
-      // データを保存（テキストまたは音声のいずれかがあれば保存）
+      // データを保存
       if (transcript || audioBlob) {
         let finalTranscript = transcript;
 
@@ -265,7 +262,7 @@ class VoiceScribeApp {
               finalTranscript = whisperText.trim();
             }
           } catch (whisperErr) {
-            console.warn('Whisper自動文字起こし警告（Safariテキストを使用）:', whisperErr);
+            console.warn('Whisper自動文字起こし警告:', whisperErr);
             this.ui.showToast(`Whisperスキップ: ${whisperErr.message}`, 'info', 3000);
           } finally {
             this.ui.hideWhisperOverlay();
@@ -319,7 +316,6 @@ class VoiceScribeApp {
       this.ui.setRecordingStatus('paused');
       if (pauseBtn) pauseBtn.textContent = '▶️';
       if (this.visualizer) this.visualizer.startIdleAnimation();
-      this.ui.showToast('録音を一時停止しました', 'info');
     } else if (this.recorder.state === 'paused') {
       this.recorder.resume();
       this.transcriber.start();
@@ -330,7 +326,6 @@ class VoiceScribeApp {
         this.visualizer.stopIdleAnimation();
         await this.visualizer.connectStream(this.recorder.stream);
       }
-      this.ui.showToast('録音を再開しました', 'info');
     }
   }
 
@@ -343,7 +338,7 @@ class VoiceScribeApp {
     this.timerInterval = setInterval(() => {
       const elapsed = this.recorder.getElapsedTime();
       this.ui.updateTimer(elapsed);
-    }, 500);
+    }, 200);
   }
 
   /**
@@ -358,90 +353,103 @@ class VoiceScribeApp {
   }
 
   /**
-   * 録音タイトルを自動生成
+   * テキストからタイトルを自動生成
    * @param {string} transcript
    * @param {string} language
    * @returns {string}
    * @private
    */
   _generateTitle(transcript, language) {
-    const now = new Date();
-    const dateStr = now.toLocaleDateString('ja-JP', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-
-    if (transcript && transcript.length > 0) {
-      const firstLine = transcript.split(/[。\.\n！？\!\?]/)[0].trim();
-      if (firstLine.length > 0) {
-        return firstLine.substring(0, 25) + (firstLine.length > 25 ? '...' : '');
-      }
+    if (!transcript || !transcript.trim()) {
+      return language === 'en-US' ? 'Voice Memo' : '録音メモ';
     }
 
-    return `録音 ${dateStr}`;
+    const clean = transcript.replace(/[。、！？!?\n\r]/g, ' ').trim();
+    const words = clean.split(/\s+/).filter(Boolean);
+
+    if (words.length === 0) {
+      return language === 'en-US' ? 'Voice Memo' : '録音メモ';
+    }
+
+    let title = words.slice(0, 5).join(' ');
+    if (title.length > 25) {
+      title = title.substring(0, 25) + '...';
+    }
+    return title;
   }
 
   // =====================================
-  // 一覧ビューの制御
+  // 2. 一覧画面 (List View) 制御
   // =====================================
 
   /**
-   * 一覧ビューのイベントリスナーを設定
+   * 一覧画面のイベントリスナーを設定
    * @private
    */
   _setupListView() {
-    // 検索入力（デバウンス付き）
+    // 検索入力
     const searchInput = document.getElementById('search-input');
     if (searchInput) {
-      let debounceTimer;
-      searchInput.addEventListener('input', () => {
+      let debounceTimer = null;
+      searchInput.addEventListener('input', (e) => {
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(async () => {
-          const query = searchInput.value;
-          const results = await this.storage.search(query);
-          this.ui.renderRecordingsList(results, this._getListCallbacks());
+          await this._searchRecordings(e.target.value);
         }, 250);
       });
     }
 
-    // タブ切替時に自動リフレッシュ
-    const listNavItems = document.querySelectorAll('[data-view="list"]');
-    listNavItems.forEach((item) => {
-      item.addEventListener('click', () => {
-        this._refreshRecordingsList();
+    // 録音カードのクリックイベント（委譲）
+    const listContainer = document.getElementById('recordings-list');
+    if (listContainer) {
+      listContainer.addEventListener('click', (e) => {
+        const deleteBtn = e.target.closest('.card-delete-btn');
+        if (deleteBtn) {
+          e.stopPropagation();
+          const card = deleteBtn.closest('.recording-card');
+          if (card && card.dataset.id) {
+            this._confirmDelete(card.dataset.id);
+          }
+          return;
+        }
+
+        const card = e.target.closest('.recording-card');
+        if (card && card.dataset.id) {
+          this._openDetail(card.dataset.id);
+        }
       });
-    });
+    }
   }
 
   /**
-   * 録音一覧を最新状態に更新
+   * 録音一覧を再読み込みして描画
    * @private
    */
   async _refreshRecordingsList() {
     try {
       const recordings = await this.storage.getAll();
-      this.ui.renderRecordingsList(recordings, this._getListCallbacks());
+      this.ui.renderRecordingsList(recordings);
     } catch (error) {
-      console.error('一覧読み込みエラー:', error);
+      console.error('録音一覧読み込みエラー:', error);
     }
   }
 
   /**
-   * 一覧操作用コールバックオブジェクトを取得
-   * @returns {Object}
+   * 録音を検索
+   * @param {string} query
    * @private
    */
-  _getListCallbacks() {
-    return {
-      onDetail: (id) => this._openDetail(id),
-      onDelete: (id) => this._confirmDelete(id)
-    };
+  async _searchRecordings(query) {
+    try {
+      const results = await this.storage.search(query);
+      this.ui.renderRecordingsList(results);
+    } catch (error) {
+      console.error('検索エラー:', error);
+    }
   }
 
   /**
-   * 削除確認ダイアログを表示
+   * 録音の削除を確認
    * @param {string} id
    * @private
    */
@@ -469,7 +477,7 @@ class VoiceScribeApp {
   }
 
   // =====================================
-  // 詳細ビューの制御
+  // 3. 詳細画面 (Detail View) 制御
   // =====================================
 
   /**
@@ -610,34 +618,33 @@ class VoiceScribeApp {
       if (currentTimeEl) currentTimeEl.textContent = '00:00';
       if (totalTimeEl) totalTimeEl.textContent = UIManager.formatTime(recording.duration || 0);
       if (progressFill) progressFill.style.width = '0%';
+
+      this.ui.switchView('detail');
     } catch (error) {
-      console.error('詳細表示エラー:', error);
+      console.error('詳細読み込みエラー:', error);
       this.ui.showToast('データの読み込みに失敗しました。', 'error');
     }
   }
 
   /**
-   * 再生/停止を切り替え
+   * 音声再生の開始/一時停止を切り替え
    * @private
    */
   async _togglePlayback() {
-    const playBtn = document.getElementById('play-btn');
-
     if (this.currentAudio && !this.currentAudio.paused) {
-      this.currentAudio.pause();
-      if (playBtn) playBtn.textContent = '▶️';
-      this._stopPlaybackTimer();
-      return;
+      this._pausePlayback();
+    } else {
+      await this._startPlayback();
     }
+  }
 
-    if (this.currentAudio && this.currentAudio.paused && this.currentAudio.currentTime > 0) {
-      this.currentAudio.play();
-      if (playBtn) playBtn.textContent = '⏸️';
-      this._startPlaybackTimer();
-      return;
-    }
+  /**
+   * 音声再生を開始
+   * @private
+   */
+  async _startPlayback() {
+    if (!this.currentDetailId) return;
 
-    // 新規再生
     try {
       const recording = await this.storage.getById(this.currentDetailId);
       if (!recording || !recording.audioBlob) {
@@ -645,59 +652,123 @@ class VoiceScribeApp {
         return;
       }
 
-      this._cleanupAudioUrl();
-      this.currentAudioUrl = URL.createObjectURL(recording.audioBlob);
-      this.currentAudio = new Audio(this.currentAudioUrl);
+      if (!this.currentAudio) {
+        if (this.currentAudioUrl) {
+          URL.revokeObjectURL(this.currentAudioUrl);
+        }
+        this.currentAudioUrl = URL.createObjectURL(recording.audioBlob);
+        this.currentAudio = new Audio(this.currentAudioUrl);
 
-      this.currentAudio.onended = () => {
-        if (playBtn) playBtn.textContent = '▶️';
-        this._stopPlaybackTimer();
-        const progressFill = document.getElementById('player-progress-fill');
-        if (progressFill) progressFill.style.width = '100%';
-      };
+        this.currentAudio.onended = () => {
+          this._stopPlayback();
+        };
 
-      this.currentAudio.onerror = () => {
-        this.ui.showToast('音声の再生に失敗しました。', 'error');
-        if (playBtn) playBtn.textContent = '▶️';
-      };
+        this.currentAudio.onerror = (e) => {
+          console.error('オーディオ再生エラー:', e);
+          this.ui.showToast('音声の再生に失敗しました。', 'error');
+          this._stopPlayback();
+        };
+      }
 
       await this.currentAudio.play();
+
+      const playBtn = document.getElementById('play-btn');
       if (playBtn) playBtn.textContent = '⏸️';
-      this._startPlaybackTimer();
+
+      this._startPlaybackTracking();
     } catch (error) {
-      console.error('再生エラー:', error);
-      this.ui.showToast('音声の再生に失敗しました。', 'error');
+      console.error('再生開始エラー:', error);
+      this.ui.showToast('音声の再生を開始できませんでした。', 'error');
     }
   }
 
   /**
-   * 再生タイマーを開始
+   * 音声再生を一時停止
    * @private
    */
-  _startPlaybackTimer() {
-    this._stopPlaybackTimer();
+  _pausePlayback() {
+    if (this.currentAudio) {
+      this.currentAudio.pause();
+      const playBtn = document.getElementById('play-btn');
+      if (playBtn) playBtn.textContent = '▶️';
+      this._stopPlaybackTracking();
+    }
+  }
+
+  /**
+   * 音声再生を停止してリセット
+   * @private
+   */
+  _stopPlayback() {
+    if (this.currentAudio) {
+      this.currentAudio.pause();
+      this.currentAudio.currentTime = 0;
+      this.currentAudio = null;
+    }
+
+    if (this.currentAudioUrl) {
+      URL.revokeObjectURL(this.currentAudioUrl);
+      this.currentAudioUrl = null;
+    }
+
+    this._stopPlaybackTracking();
+
+    const playBtn = document.getElementById('play-btn');
+    const currentTimeEl = document.getElementById('player-current-time');
+    const progressFill = document.getElementById('player-progress-fill');
+
+    if (playBtn) playBtn.textContent = '▶️';
+    if (currentTimeEl) currentTimeEl.textContent = '00:00';
+    if (progressFill) progressFill.style.width = '0%';
+  }
+
+  /**
+   * 再生位置をスキップ（秒数指定）
+   * @param {number} seconds
+   * @private
+   */
+  _skipPlayback(seconds) {
+    if (!this.currentAudio) return;
+    const newTime = Math.max(0, Math.min(this.currentAudio.duration || 0, this.currentAudio.currentTime + seconds));
+    this.currentAudio.currentTime = newTime;
+    this._updatePlaybackUI();
+  }
+
+  /**
+   * プログレスバークリックでシーク
+   * @param {MouseEvent} event
+   * @private
+   */
+  _seekPlayback(event) {
+    if (!this.currentAudio || !this.currentAudio.duration) return;
+
+    const progressBar = document.getElementById('player-progress');
+    if (!progressBar) return;
+
+    const rect = progressBar.getBoundingClientRect();
+    const clickX = event.clientX - rect.left;
+    const ratio = Math.max(0, Math.min(1, clickX / rect.width));
+
+    this.currentAudio.currentTime = ratio * this.currentAudio.duration;
+    this._updatePlaybackUI();
+  }
+
+  /**
+   * 再生トラッキングタイマーを開始
+   * @private
+   */
+  _startPlaybackTracking() {
+    this._stopPlaybackTracking();
     this.playbackInterval = setInterval(() => {
-      if (!this.currentAudio) return;
-
-      const currentTimeEl = document.getElementById('player-current-time');
-      const progressFill = document.getElementById('player-progress-fill');
-
-      if (currentTimeEl) {
-        currentTimeEl.textContent = UIManager.formatTime(this.currentAudio.currentTime);
-      }
-
-      if (progressFill && this.currentAudio.duration) {
-        const progress = (this.currentAudio.currentTime / this.currentAudio.duration) * 100;
-        progressFill.style.width = `${progress}%`;
-      }
+      this._updatePlaybackUI();
     }, 100);
   }
 
   /**
-   * 再生タイマーを停止
+   * 再生トラッキングタイマーを停止
    * @private
    */
-  _stopPlaybackTimer() {
+  _stopPlaybackTracking() {
     if (this.playbackInterval) {
       clearInterval(this.playbackInterval);
       this.playbackInterval = null;
@@ -705,93 +776,56 @@ class VoiceScribeApp {
   }
 
   /**
-   * 再生を完全に停止
+   * 再生UI（時間・プログレスバー）を更新
    * @private
    */
-  _stopPlayback() {
-    if (this.currentAudio) {
-      this.currentAudio.pause();
-      this.currentAudio = null;
-    }
-    this._cleanupAudioUrl();
-    this._stopPlaybackTimer();
+  _updatePlaybackUI() {
+    if (!this.currentAudio) return;
 
-    const playBtn = document.getElementById('play-btn');
-    if (playBtn) playBtn.textContent = '▶️';
-  }
+    const current = this.currentAudio.currentTime || 0;
+    const duration = this.currentAudio.duration || 0;
 
-  /**
-   * オーディオBlobのURLを解放（メモリリーク防止）
-   * @private
-   */
-  _cleanupAudioUrl() {
-    if (this.currentAudioUrl) {
-      URL.revokeObjectURL(this.currentAudioUrl);
-      this.currentAudioUrl = null;
+    const currentTimeEl = document.getElementById('player-current-time');
+    const totalTimeEl = document.getElementById('player-total-time');
+    const progressFill = document.getElementById('player-progress-fill');
+
+    if (currentTimeEl) currentTimeEl.textContent = UIManager.formatTime(current);
+    if (totalTimeEl && duration > 0) totalTimeEl.textContent = UIManager.formatTime(duration);
+
+    if (progressFill && duration > 0) {
+      const percentage = (current / duration) * 100;
+      progressFill.style.width = `${percentage}%`;
     }
   }
 
   /**
-   * 再生位置をスキップ
-   * @param {number} seconds
-   * @private
-   */
-  _skipPlayback(seconds) {
-    if (this.currentAudio) {
-      this.currentAudio.currentTime = Math.max(
-        0,
-        Math.min(this.currentAudio.duration || 0, this.currentAudio.currentTime + seconds)
-      );
-    }
-  }
-
-  /**
-   * シークバーをクリックして再生位置を変更
-   * @param {MouseEvent} event
-   * @private
-   */
-  _seekPlayback(event) {
-    if (!this.currentAudio || !this.currentAudio.duration) return;
-
-    const bar = event.currentTarget;
-    const rect = bar.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const ratio = Math.max(0, Math.min(1, x / rect.width));
-
-    this.currentAudio.currentTime = ratio * this.currentAudio.duration;
-  }
-
-  /**
-   * 詳細画面のテキストをクリップボードにコピー
+   * 詳細画面のテキストをコピー
    * @private
    */
   async _copyDetailText() {
-    try {
-      const recording = await this.storage.getById(this.currentDetailId);
-      const text = recording && recording.transcript ? recording.transcript.trim() : '';
+    const textEl = document.getElementById('detail-transcript-text');
+    const text = textEl ? (textEl.innerText || textEl.textContent || '').trim() : '';
 
-      if (!text) {
-        this.ui.showToast('コピーするテキストがありません。', 'info');
-        return;
-      }
+    if (!text || text === 'テキストなし') {
+      this.ui.showToast('コピーするテキストがありません。', 'info');
+      return;
+    }
 
-      const success = await UIManager.copyToClipboard(text);
-      if (success) {
-        this.ui.showToast('📋 全文テキストをコピーしました', 'success');
-      } else {
-        this.ui.showToast('コピーに失敗しました。長押しで選択してください。', 'error');
-      }
-    } catch (err) {
-      console.error('テキストコピーエラー:', err);
-      this.ui.showToast('コピー中にエラーが発生しました。', 'error');
+    const success = await UIManager.copyToClipboard(text);
+    if (success) {
+      this.ui.showToast('📋 テキストをコピーしました', 'success');
+    } else {
+      this.ui.showToast('コピーに失敗しました。', 'error');
     }
   }
 
   /**
-   * テキストファイルをエクスポート
+   * テキストファイルとしてエクスポート
    * @private
    */
   async _exportText() {
+    if (!this.currentDetailId) return;
+
     try {
       const recording = await this.storage.getById(this.currentDetailId);
       if (!recording || !recording.transcript) {
@@ -799,11 +833,14 @@ class VoiceScribeApp {
         return;
       }
 
-      const blob = new Blob([recording.transcript], { type: 'text/plain;charset=utf-8' });
+      const dateStr = UIManager.formatDate(recording.createdAt);
+      const content = `タイトル: ${recording.title || '録音メモ'}\n録音日時: ${dateStr}\n録音時間: ${UIManager.formatTime(recording.duration || 0)}\n\n--- 文字起こし ---\n\n${recording.transcript}`;
+
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${recording.title || '録音'}_テキスト.txt`;
+      a.download = `${recording.title || '録音'}_文字起こし.txt`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -817,10 +854,12 @@ class VoiceScribeApp {
   }
 
   /**
-   * 音声ファイルをエクスポート
+   * 音声ファイルとしてエクスポート
    * @private
    */
   async _exportAudio() {
+    if (!this.currentDetailId) return;
+
     try {
       const recording = await this.storage.getById(this.currentDetailId);
       if (!recording || !recording.audioBlob) {

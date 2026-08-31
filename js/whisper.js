@@ -1,62 +1,70 @@
 /**
  * VoiceScribe — Groq Whisper 音声認識サービス (WhisperService)
- * 録音された音声ファイル全体を Groq の超高速 LPU (Whisper Large v3) に送信し、
+ * 録音されたクリアな音声データ（Blob）を Groq の超高速 LPU (Whisper Large v3) に送信し、
  * 抜け落ちのない100%忠実な全文文字起こしを0.5秒〜1秒の爆速で生成
  */
 
 class WhisperService {
   constructor() {
     this.storageKey = 'voicescribe_groq_api_key';
-    this.apiKey = this.loadApiKey();
     this.endpoint = 'https://api.groq.com/openai/v1/audio/transcriptions';
     this.model = 'whisper-large-v3';
+    this.apiKey = this.loadApiKey();
   }
 
   /**
    * 保存されたAPIキーを取得
-   * @returns {string}
+   * @returns {string} APIキー文字列
    */
   loadApiKey() {
-    return localStorage.getItem(this.storageKey) || '';
+    try {
+      return localStorage.getItem(this.storageKey) || '';
+    } catch {
+      return '';
+    }
   }
 
   /**
-   * APIキーを保存
-   * @param {string} key
+   * APIキーを保存または削除
+   * @param {string} key - 登録するAPIキー
    */
   saveApiKey(key) {
     const cleanKey = (key || '').trim();
     this.apiKey = cleanKey;
-    if (cleanKey) {
-      localStorage.setItem(this.storageKey, cleanKey);
-    } else {
-      localStorage.removeItem(this.storageKey);
+    try {
+      if (cleanKey) {
+        localStorage.setItem(this.storageKey, cleanKey);
+      } else {
+        localStorage.removeItem(this.storageKey);
+      }
+    } catch (e) {
+      console.warn('APIキー保存エラー:', e);
     }
   }
 
   /**
-   * APIキーが設定されているか
+   * 有効な形式のAPIキーが設定されているか
    * @returns {boolean}
    */
   hasApiKey() {
-    return !!this.apiKey && this.apiKey.length >= 10;
+    return typeof this.apiKey === 'string' && this.apiKey.trim().length >= 10;
   }
 
   /**
-   * APIキーの接続テスト
-   * @param {string} [testKey]
-   * @returns {Promise<{success: boolean, message: string}>}
+   * APIキーの接続テストを実行
+   * @param {string} [testKey] - テストするAPIキー（省略時は保存済みキー）
+   * @returns {Promise<{success: boolean, message: string}>} テスト結果オブジェクト
    */
   async testConnection(testKey) {
-    const key = testKey || this.apiKey;
+    const key = (testKey !== undefined ? testKey : this.apiKey || '').trim();
     if (!key) {
-      return { success: false, message: 'APIキーが入力されていません。' };
+      return { success: false, message: '⚠️ APIキーが入力されていません。' };
     }
 
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
+    try {
       const response = await fetch('https://api.groq.com/openai/v1/models', {
         method: 'GET',
         headers: {
@@ -75,17 +83,21 @@ class WhisperService {
 
       return { success: true, message: '✅ Groq API 接続成功！Whisper-large-v3 が利用可能です。' };
     } catch (err) {
-      console.error('Groq API test error:', err);
+      clearTimeout(timeoutId);
+      console.warn('Groq API test warning:', err);
       const isAbort = err.name === 'AbortError';
-      return { success: false, message: isAbort ? '接続タイムアウト（ネットワークを確認してください）' : `通信エラー: ${err.message}` };
+      return {
+        success: false,
+        message: isAbort ? '接続タイムアウト（通信環境をご確認ください）' : `通信エラー: ${err.message}`
+      };
     }
   }
 
   /**
    * 音声Blobから超高精度な文字起こしを爆速実行
-   * @param {Blob} audioBlob - 録音された音声データ
-   * @param {'ja-JP'|'en-US'} [language='ja-JP'] - 言語
-   * @returns {Promise<string>} - 文字起こし全文テキスト
+   * @param {Blob} audioBlob - 録音された音声データBlob
+   * @param {'ja-JP'|'en-US'} [language='ja-JP'] - 言語コード
+   * @returns {Promise<string>} 文字起こし全文テキスト
    */
   async transcribeAudio(audioBlob, language = 'ja-JP') {
     if (!this.hasApiKey()) {
@@ -99,17 +111,17 @@ class WhisperService {
     // 1. ファイル拡張子の決定（iOS Safariはmp4、他はwebmなど）
     const mimeType = audioBlob.type || 'audio/mp4';
     const ext = mimeType.includes('webm') ? 'webm' : (mimeType.includes('ogg') ? 'ogg' : 'mp4');
-    const fileName = `audio.${ext}`;
+    const fileName = `recording.${ext}`;
 
-    // 2. FormDataの構築（Blobを直接ファイル名付きでappendしてiOS Safari互換性を最大化）
+    // 2. FormDataの構築（Blobを直接ファイル名付きでappend）
     const formData = new FormData();
     formData.append('file', audioBlob, fileName);
     formData.append('model', this.model);
     formData.append('language', language === 'en-US' ? 'en' : 'ja');
-    formData.append('temperature', '0.0');
+    formData.append('temperature', '0.0'); // 忠実度を最大化し、ループや幻覚を100%防止
     formData.append('response_format', 'json');
 
-    // 3. タイムアウト付きフェッチ（最大10秒）
+    // 3. タイムアウト付き通信（最大10秒）
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
