@@ -1,6 +1,7 @@
 /**
  * VoiceScribe — 音声認識（文字起こし）モジュール
  * Web Speech API (webkitSpeechRecognition) を利用したリアルタイム音声文字起こし
+ * 句読点（、。）や改行を自然に自動補正するAutoPunctuationエンジンを内蔵
  */
 
 class Transcriber {
@@ -14,6 +15,10 @@ class Transcriber {
     this.retryCount = 0;
     this.maxRetries = 10;
     this.retryDelay = 300;
+
+    // 自動改行用のトラッキング
+    this.lastParagraphLength = 0;
+    this.lastFinalTime = 0;
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
@@ -85,7 +90,9 @@ class Transcriber {
       }
 
       if (currentFinal) {
-        this.finalTranscript += currentFinal;
+        // 確定テキストを自動句読点・改行フォーマット
+        const formattedChunk = this._formatFinalChunk(currentFinal);
+        this.finalTranscript = this._appendFormattedChunk(this.finalTranscript, formattedChunk);
       }
       this.interimTranscript = currentInterim;
 
@@ -130,6 +137,91 @@ class Transcriber {
   }
 
   /**
+   * 確定した発話チャンクに自動で「、」「。」「？」や改行を付与
+   * @param {string} rawChunk
+   * @returns {string}
+   * @private
+   */
+  _formatFinalChunk(rawChunk) {
+    let text = (rawChunk || '').trim();
+    if (!text) return '';
+
+    if (this.language === 'ja-JP') {
+      // 1. 文中の読点（、）の自動補正
+      text = text
+        // 接続詞の後ろに読点を補完
+        .replace(/(そして|また|しかし|だけど|ですから|なので|だから|ところで|さて|例えば|なお|ちなみに|要するに|つまり|まず|次に|最後に)(?![、，,\s])/g, '$1、')
+        // 長い条件・逆接・理由の接続助詞の後ろに読点を補完
+        .replace(/(ので|から|けれど|けれども|けど|たら|なら|ば|ても|ながら|ものの)(?![、，,\s。！？!\?])/g, '$1、');
+
+      // 2. 文末の句点（。）または疑問符（？）の自動補正
+      if (!/[。！？!\?]$/.test(text)) {
+        // 疑問表現で終わる場合は「？」
+        if (/(ですか|ますか|でしょうか|なの|なのか|ですかね|かな|かしら|かい|誰|何|いつ|どこ|なぜ|どうして|どう)$/.test(text)) {
+          text += '？';
+        } else {
+          // 通常の文末表現または文末には「。」
+          text += '。';
+        }
+      }
+    } else {
+      // 英語（en-US）の自動句読点
+      // 文頭を大文字化
+      text = text.charAt(0).toUpperCase() + text.slice(1);
+
+      // 接続詞の後ろにカンマ
+      text = text.replace(/^(However|Furthermore|Therefore|Moreover|For example|First|Next|Finally|Actually|In addition)(?!,)/i, '$1,');
+
+      // 文末にピリオドまたはクエスチョンマーク
+      if (!/[.!?]$/.test(text)) {
+        if (/^(who|what|when|where|why|how|is|are|do|does|did|can|could|would|should|will|have|has)\b/i.test(text)) {
+          text += '?';
+        } else {
+          text += '.';
+        }
+      }
+    }
+
+    return text;
+  }
+
+  /**
+   * 既存の文字起こしに新しいチャンクを自然な改行を挟んで結合
+   * @param {string} currentText
+   * @param {string} newChunk
+   * @returns {string}
+   * @private
+   */
+  _appendFormattedChunk(currentText, newChunk) {
+    if (!currentText) {
+      this.lastParagraphLength = newChunk.length;
+      this.lastFinalTime = Date.now();
+      return newChunk;
+    }
+
+    const now = Date.now();
+    const pauseDuration = this.lastFinalTime ? now - this.lastFinalTime : 0;
+    this.lastFinalTime = now;
+
+    // 自動改行の判定条件：
+    // 1. 直前の段落が60文字以上かつ「。」「？」で終わっている場合
+    // 2. または話者が1.5秒以上の長めのポーズを取った場合
+    const shouldParagraphBreak =
+      (this.lastParagraphLength >= 60 && /[。！？!\?]$/.test(currentText)) ||
+      (pauseDuration >= 1500 && /[。！？!\?]$/.test(currentText));
+
+    if (shouldParagraphBreak) {
+      this.lastParagraphLength = newChunk.length;
+      return `${currentText}\n\n${newChunk}`;
+    } else {
+      this.lastParagraphLength += newChunk.length;
+      // 英語の場合はスペースで結合、日本語はそのまま結合
+      const separator = this.language === 'en-US' && !currentText.endsWith('\n') ? ' ' : '';
+      return `${currentText}${separator}${newChunk}`;
+    }
+  }
+
+  /**
    * 言語を設定
    * @param {'ja-JP'|'en-US'} lang
    */
@@ -157,6 +249,8 @@ class Transcriber {
     this.finalTranscript = '';
     this.interimTranscript = '';
     this.retryCount = 0;
+    this.lastParagraphLength = 0;
+    this.lastFinalTime = Date.now();
     this.shouldRestart = true;
     this.isListening = true;
 
@@ -192,14 +286,20 @@ class Transcriber {
   }
 
   /**
-   * 現在の文字起こしテキストを取得（確定テキスト＋暫定テキストを合成）
+   * 現在の文字起こしテキストを取得（確定テキスト＋暫定テキストを合成・整形）
    * @returns {string}
    */
   getFullTranscript() {
     const final = (this.finalTranscript || '').trim();
-    const interim = (this.interimTranscript || '').trim();
+    let interim = (this.interimTranscript || '').trim();
+
+    if (interim) {
+      interim = this._formatFinalChunk(interim);
+    }
+
     if (final && interim) {
-      return `${final} ${interim}`;
+      const sep = this.language === 'en-US' ? ' ' : '';
+      return `${final}${sep}${interim}`;
     }
     return final || interim || '';
   }
@@ -210,6 +310,8 @@ class Transcriber {
   reset() {
     this.finalTranscript = '';
     this.interimTranscript = '';
+    this.lastParagraphLength = 0;
+    this.lastFinalTime = 0;
   }
 
   /**
