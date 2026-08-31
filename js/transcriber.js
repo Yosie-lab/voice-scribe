@@ -85,7 +85,11 @@ class Transcriber {
       }
 
       if (currentFinal) {
-        this.finalTranscript += currentFinal;
+        // 日本語環境の場合、句読点と音声コマンドを安全に適用
+        const formattedFinal = this.language === 'ja-JP'
+          ? this._formatJapanesePunctuation(currentFinal)
+          : currentFinal;
+        this.finalTranscript += formattedFinal;
       }
       this.interimTranscript = currentInterim;
 
@@ -235,6 +239,43 @@ class Transcriber {
         }
       }
     }, this.retryDelay);
+  }
+
+  /**
+   * 日本語の確定テキストに安全・自然に句読点を付与
+   * @param {string} text - 確定テキストチャンク
+   * @returns {string} 整形後のテキスト
+   * @private
+   */
+  _formatJapanesePunctuation(text) {
+    if (!text) return '';
+    let res = text;
+
+    // 1. 音声句読点コマンド（「まる」「てん」「改行」）の置換
+    res = res
+      .replace(/(?:^|[\s\u3000])(?:まる|くてん|ピリオド)(?:[\s\u3000]|$)/g, '。')
+      .replace(/(?:^|[\s\u3000])(?:てん|とうてん|コンマ)(?:[\s\u3000]|$)/g, '、')
+      .replace(/(?:^|[\s\u3000])(?:かいぎょう|改行)(?:[\s\u3000]|$)/g, '\n');
+
+    // 2. 文末パターン（〜です、〜ます、〜でした 等）の末尾に「。」を安全補完
+    const endPatterns = /(?:です|ます|でした|ません|でしたら|ください|ですね|でしょうか|思います|あります|おります|いたします|となります|なりました|行います|始めます)$/;
+    if (endPatterns.test(res) && !/[。、！？!?\n]$/.test(res)) {
+      res += '。';
+    }
+
+    // 3. 接続・中継ぎパターン（〜ですが、〜ので、〜から、〜けど 等）の末尾に「、」を安全補完
+    const commaPatterns = /(?:ですが|ので|から|けれど|けれども|そして|また|しかし|ただし|なお|ですが)$/;
+    if (commaPatterns.test(res) && !/[。、！？!?\n]$/.test(res)) {
+      res += '、';
+    }
+
+    // 4. 重複句読点のクリーンアップ
+    res = res
+      .replace(/。+/g, '。')
+      .replace(/、+/g, '、')
+      .replace(/、。/g, '。');
+
+    return res;
   }
 }
 

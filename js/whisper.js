@@ -121,6 +121,12 @@ class WhisperService {
     formData.append('temperature', '0.0'); // 忠実度を最大化し、ループや幻覚を100%防止
     formData.append('response_format', 'json');
 
+    // 自然な「、」「。」などの句読点付与を促すお手本プロンプト
+    const promptText = language === 'en-US'
+      ? 'Hello, this is a clear transcript with proper punctuation, commas, and periods.'
+      : 'こんにちは。こちらは文字起こしです。句読点（「、」や「。」）を適切に入れた自然な日本語で書き起こします。';
+    formData.append('prompt', promptText);
+
     // 3. タイムアウト付き通信（最大10秒）
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
@@ -144,7 +150,15 @@ class WhisperService {
       }
 
       const data = await response.json();
-      return (data.text || '').trim();
+      let rawText = (data.text || '').trim();
+
+      // 句読点の軽微な重複クリーンアップ（他に影響しない安全な整形）
+      rawText = rawText
+        .replace(/。+/g, '。')
+        .replace(/、+/g, '、')
+        .replace(/、。/g, '。');
+
+      return rawText;
     } catch (err) {
       clearTimeout(timeoutId);
       if (err.name === 'AbortError') {

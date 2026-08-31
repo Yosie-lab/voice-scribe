@@ -303,6 +303,11 @@ class VoiceScribeApp {
           }
         }
 
+        // 日本語テキストで文末に句読点がない場合、自然に「。」を付与
+        if (language === 'ja-JP' && finalTranscript && !/[。、！？!?\n]$/.test(finalTranscript)) {
+          finalTranscript += '。';
+        }
+
         const recording = {
           id: this.currentRecordingId,
           title: this._generateTitle(finalTranscript, language),
