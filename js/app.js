@@ -8,6 +8,7 @@ class VoiceScribeApp {
     this.storage = new StorageManager();
     this.recorder = new AudioRecorder();
     this.transcriber = new Transcriber();
+    this.gemini = new GeminiService();
     this.ui = null;
     this.visualizer = null;
 
@@ -20,6 +21,8 @@ class VoiceScribeApp {
     this.currentAudioUrl = null;
     this.playbackInterval = null;
     this.wakeLock = null; // 画面自動スリープ防止ロック
+
+    window.app = this;
   }
 
   /**
@@ -273,12 +276,32 @@ class VoiceScribeApp {
 
       // データを保存（テキストまたは音声のいずれかがあれば保存）
       if (transcript || audioBlob) {
+        let finalTitle = this._generateTitle(transcript, language);
+        let finalTranscript = transcript;
+
+        // Gemini AI 自動文字起こしが有効でキーがある場合、音声Blobから高精度文字起こし
+        if (this.gemini.hasApiKey() && this.gemini.isAutoEnabled && audioBlob) {
+          try {
+            this.ui.showAiOverlay('✨ Gemini AI 解析中...', '音声を100%正確に文字起こし＆要約しています');
+            const aiResult = await this.gemini.transcribeAndSummarize(audioBlob, language);
+            if (aiResult && aiResult.transcript) {
+              finalTranscript = aiResult.transcript;
+              finalTitle = aiResult.headline ? aiResult.headline.replace(/^📌\s*/, '') : finalTitle;
+            }
+          } catch (aiErr) {
+            console.warn('Gemini自動文字起こし失敗（通常保存へフォールバック）:', aiErr);
+            this.ui.showToast(`AI文字起こしスキップ: ${aiErr.message}`, 'info', 4000);
+          } finally {
+            this.ui.hideAiOverlay();
+          }
+        }
+
         const recording = {
           id: this.currentRecordingId,
-          title: this._generateTitle(transcript, language),
+          title: finalTitle,
           audioBlob: audioBlob,
           mimeType: audioMime,
-          transcript: transcript,
+          transcript: finalTranscript,
           language: language,
           duration: duration,
           createdAt: Date.now()
@@ -286,17 +309,21 @@ class VoiceScribeApp {
 
         await this.storage.save(recording);
         await this._refreshRecordingsList();
-        this.ui.showToast('✅ 録音を保存しました', 'success');
+        this.ui.showToast('✅ 録音と文字起こしを保存しました', 'success');
+
+        // 画面のテキストも更新
+        this.ui.updateTranscript(finalTranscript, '', false);
+      } else {
+        this.ui.updateTranscript(transcript, '', false);
       }
 
-      // 確定テキストを表示状態で残す
-      this.ui.updateTranscript(transcript, '', false);
       this.ui.updateTimer(0);
     } catch (error) {
       console.error('録音停止エラー:', error);
       this.isRecording = false;
       this.ui.setRecordingStatus('standby');
       this._stopTimer();
+      if (this.ui.hideAiOverlay) this.ui.hideAiOverlay();
     }
   }
 
@@ -517,6 +544,12 @@ class VoiceScribeApp {
       detailCopyBtn.addEventListener('click', () => this._copyDetailText());
     }
 
+    // AI再文字起こしボタン
+    const detailAiBtn = document.getElementById('detail-ai-transcribe-btn');
+    if (detailAiBtn) {
+      detailAiBtn.addEventListener('click', () => this._requestGeminiDetailTranscribe());
+    }
+
     // テキストダウンロードボタン
     const exportTextBtn = document.getElementById('export-text-btn');
     if (exportTextBtn) {
@@ -527,6 +560,52 @@ class VoiceScribeApp {
     const exportAudioBtn = document.getElementById('export-audio-btn');
     if (exportAudioBtn) {
       exportAudioBtn.addEventListener('click', () => this._exportAudio());
+    }
+  }
+
+  /**
+   * 詳細画面から手動でGemini AI文字起こし＆要約を実行
+   * @private
+   */
+  async _requestGeminiDetailTranscribe() {
+    if (!this.currentDetailId) return;
+
+    if (!this.gemini.hasApiKey()) {
+      this.ui.showToast('⚙️ 設定画面からGemini APIキーを登録してください', 'info', 4000);
+      const settingsBtn = document.getElementById('header-settings-btn');
+      if (settingsBtn) settingsBtn.click();
+      return;
+    }
+
+    try {
+      const recording = await this.storage.getById(this.currentDetailId);
+      if (!recording || !recording.audioBlob) {
+        this.ui.showToast('音声データが保存されていないため、AI文字起こしを実行できません。', 'error');
+        return;
+      }
+
+      this.ui.showAiOverlay('✨ Gemini AI 高精度文字起こし中...', '音声データを解析して一言一句正確に書き起こしています');
+
+      const aiResult = await this.gemini.transcribeAndSummarize(recording.audioBlob, recording.language || 'ja-JP');
+
+      if (aiResult && aiResult.transcript) {
+        recording.transcript = aiResult.transcript;
+        if (aiResult.headline) {
+          recording.title = aiResult.headline.replace(/^📌\s*/, '');
+        }
+
+        await this.storage.save(recording);
+        await this._refreshRecordingsList();
+
+        // 詳細画面を再描画
+        this.ui.showDetail(recording);
+        this.ui.showToast('✨ AI文字起こし＆要約が完了しました！', 'success', 3000);
+      }
+    } catch (err) {
+      console.error('詳細AI文字起こしエラー:', err);
+      this.ui.showToast(`AI文字起こしエラー: ${err.message}`, 'error', 5000);
+    } finally {
+      this.ui.hideAiOverlay();
     }
   }
 

@@ -31,9 +31,16 @@ class UIManager {
     // 詳細画面のアクティブタブ ('summary' | 'full')
     this.currentDetailTab = 'summary';
 
+    // AI処理中オーバーレイ
+    this.aiOverlay = document.getElementById('ai-processing-overlay');
+
+    // 設定モーダル
+    this.settingsModal = document.getElementById('settings-modal-overlay');
+
     this._initFontControls();
     this._initQuickCopy();
     this._initDetailTabs();
+    this._initSettingsModal();
   }
 
   /**
@@ -585,6 +592,118 @@ class UIManager {
     this.modalOverlay.addEventListener('click', (e) => {
       if (e.target === this.modalOverlay) handleCancel();
     }, { once: true });
+  }
+
+  /**
+   * 設定モーダルの初期化
+   * @private
+   */
+  _initSettingsModal() {
+    const settingsBtn = document.getElementById('header-settings-btn');
+    const closeBtn = document.getElementById('settings-modal-close');
+    const toggleVisBtn = document.getElementById('toggle-key-visibility-btn');
+    const keyInput = document.getElementById('gemini-api-key-input');
+    const autoToggle = document.getElementById('auto-gemini-toggle');
+    const testBtn = document.getElementById('test-gemini-btn');
+    const saveBtn = document.getElementById('save-settings-btn');
+    const statusBox = document.getElementById('settings-status-box');
+
+    if (!settingsBtn || !this.settingsModal) return;
+
+    // 開く
+    settingsBtn.addEventListener('click', () => {
+      if (window.app && window.app.gemini) {
+        if (keyInput) keyInput.value = window.app.gemini.apiKey || '';
+        if (autoToggle) autoToggle.checked = window.app.gemini.isAutoEnabled;
+      }
+      if (statusBox) statusBox.innerHTML = '';
+      this.settingsModal.classList.add('active');
+    });
+
+    // 閉じる
+    const closeSettings = () => {
+      this.settingsModal.classList.remove('active');
+    };
+    if (closeBtn) closeBtn.addEventListener('click', closeSettings);
+    this.settingsModal.addEventListener('click', (e) => {
+      if (e.target === this.settingsModal) closeSettings();
+    });
+
+    // APIキーの表示/非表示切り替え
+    if (toggleVisBtn && keyInput) {
+      toggleVisBtn.addEventListener('click', () => {
+        const isPwd = keyInput.type === 'password';
+        keyInput.type = isPwd ? 'text' : 'password';
+        toggleVisBtn.textContent = isPwd ? '🙈' : '👁️';
+      });
+    }
+
+    // 接続テスト
+    if (testBtn) {
+      testBtn.addEventListener('click', async () => {
+        const key = keyInput ? keyInput.value.trim() : '';
+        if (!key) {
+          if (statusBox) statusBox.innerHTML = '<span class="status-err">⚠️ APIキーを入力してください</span>';
+          return;
+        }
+        testBtn.disabled = true;
+        testBtn.textContent = '⏳ テスト中...';
+        if (statusBox) statusBox.innerHTML = '<span class="status-info">Gemini APIに接続中...</span>';
+
+        const gemini = window.app ? window.app.gemini : new GeminiService();
+        const result = await gemini.testConnection(key);
+
+        testBtn.disabled = false;
+        testBtn.textContent = '🔄 接続テスト';
+
+        if (statusBox) {
+          if (result.success) {
+            statusBox.innerHTML = `<span class="status-ok">${result.message}</span>`;
+          } else {
+            statusBox.innerHTML = `<span class="status-err">${result.message}</span>`;
+          }
+        }
+      });
+    }
+
+    // 保存
+    if (saveBtn) {
+      saveBtn.addEventListener('click', () => {
+        const key = keyInput ? keyInput.value.trim() : '';
+        const isAuto = autoToggle ? autoToggle.checked : true;
+
+        if (window.app && window.app.gemini) {
+          window.app.gemini.saveApiKey(key);
+          window.app.gemini.saveAutoEnabled(isAuto);
+        }
+
+        this.showToast('💾 設定を保存しました', 'success');
+        closeSettings();
+      });
+    }
+  }
+
+  /**
+   * AI解析中オーバーレイを表示
+   * @param {string} [title='Gemini AI 解析中...']
+   * @param {string} [desc='音声を高精度に文字起こし＆要約しています']
+   */
+  showAiOverlay(title = 'Gemini AI 解析中...', desc = '音声を高精度に文字起こし＆要約しています') {
+    if (!this.aiOverlay) return;
+    const titleEl = document.getElementById('ai-processing-title');
+    const descEl = document.getElementById('ai-processing-desc');
+    if (titleEl) titleEl.textContent = title;
+    if (descEl) descEl.textContent = desc;
+    this.aiOverlay.classList.add('active');
+  }
+
+  /**
+   * AI解析中オーバーレイを非表示
+   */
+  hideAiOverlay() {
+    if (this.aiOverlay) {
+      this.aiOverlay.classList.remove('active');
+    }
   }
 
   /**
