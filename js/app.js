@@ -161,26 +161,44 @@ class VoiceScribeApp {
       placeholderEl.style.display = 'none';
     }
 
-    // 1. 文字起こしエンジンを同期起動（iOS Safari必須）
     this.transcriber.onResult = (finalText, interimText) => {
       this.ui.updateTranscript(finalText, interimText, true);
     };
 
-    try {
-      this.transcriber.start();
-    } catch (e) {
-      console.warn('SpeechRecognition start warning:', e);
+    // iOS Safari はタップ同期で SpeechRecognition を先に起動する（continuous:false の再生成経路）。
+    // desktop Chromium は逆順にすると getUserMedia が認識を abort し、ライブ文字が出ない。
+    const recognitionFirst = this.transcriber.startBeforeRecorder;
+
+    if (recognitionFirst) {
+      try {
+        this.transcriber.start();
+      } catch (e) {
+        console.warn('SpeechRecognition start warning:', e);
+      }
     }
 
-    // 2. 音声録音（MediaRecorder）を起動
     try {
       const stream = await this.recorder.start();
+      if (!this.isRecording) {
+        try { await this.recorder.stop(); } catch { /* 停止済み */ }
+        return;
+      }
       if (this.visualizer && stream) {
         this.visualizer.stopIdleAnimation();
         await this.visualizer.connectStream(stream);
       }
     } catch (recErr) {
       console.warn('MediaRecorder start warning:', recErr);
+    }
+
+    if (!this.isRecording) return;
+
+    if (!recognitionFirst) {
+      try {
+        this.transcriber.start();
+      } catch (e) {
+        console.warn('SpeechRecognition start warning:', e);
+      }
     }
 
     // 言語ボタンを一時無効化
