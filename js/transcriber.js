@@ -13,6 +13,7 @@ class Transcriber {
     this.interimTranscript = '';
     this.retryCount = 0;
     this.maxRetries = 8;
+    this._contentionRestarts = 0;
     this._restartTimer = null;
     this._isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -78,6 +79,7 @@ class Transcriber {
     // 結果受信ハンドラ
     this.recognition.onresult = (event) => {
       this.retryCount = 0;
+      this._contentionRestarts = 0;
 
       let currentInterim = '';
       let currentFinal = '';
@@ -110,7 +112,25 @@ class Transcriber {
       const err = event.error || 'error';
       console.warn('音声認識イベントエラー:', err);
 
-      if (err === 'no-speech' || err === 'aborted') return;
+      if (err === 'no-speech') return;
+
+      // desktop Chromium は MediaRecorder の getUserMedia にマイクを取られると
+      // aborted だけで黙って死ぬ（onend が来ないことがある）。録音中なら作り直す。
+      // iOS は onend の再生成に任せ、ここは触らない。
+      if (err === 'aborted') {
+        if (!this._isIOS && this.shouldRestart && this.isListening) {
+          this._contentionRestarts++;
+          if (this._contentionRestarts > this.maxRetries) {
+            this.stop();
+            if (this.onError) {
+              this.onError('音声認識を継続できません。もう一度録音を開始してください。');
+            }
+            return;
+          }
+          this._scheduleRestart(300);
+        }
+        return;
+      }
 
       if (err === 'audio-capture') {
         if (this.onError) this.onError('マイクにアクセスできません。');
@@ -134,6 +154,15 @@ class Transcriber {
         if (this.onEnd) this.onEnd();
       }
     };
+  }
+
+  /**
+   * iPhone Safari はユーザージェスチャ内で認識を先に start する。
+   * desktop Chromium は getUserMedia より前に start すると認識が abort される。
+   * @returns {boolean}
+   */
+  get startBeforeRecorder() {
+    return this._isIOS;
   }
 
   /**
@@ -164,6 +193,7 @@ class Transcriber {
     this.finalTranscript = '';
     this.interimTranscript = '';
     this.retryCount = 0;
+    this._contentionRestarts = 0;
     this._clearRestartTimer();
     this.shouldRestart = true;
     this.isListening = true;
@@ -223,12 +253,13 @@ class Transcriber {
 
   /**
    * onend 後に認識インスタンスを作り直して再開する。連続呼び出しは1本にまとめる。
+   * @param {number} [delayMs]
    * @private
    */
-  _scheduleRestart() {
+  _scheduleRestart(delayMs) {
     if (!this.shouldRestart || !this.isListening || this._restartTimer) return;
 
-    const delay = this._isIOS ? 220 : 80;
+    const delay = typeof delayMs === 'number' ? delayMs : (this._isIOS ? 220 : 80);
     this._restartTimer = setTimeout(() => {
       this._restartTimer = null;
       this._restartNow();
