@@ -12,8 +12,10 @@ class Transcriber {
     this.finalTranscript = '';
     this.interimTranscript = '';
     this.retryCount = 0;
-    this.maxRetries = 10;
-    this.retryDelay = 300;
+    this.maxRetries = 8;
+    this._restartTimer = null;
+    this._isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
@@ -31,7 +33,7 @@ class Transcriber {
     if (!SpeechRecognition) {
       return {
         available: false,
-        reason: 'お使いのブラウザは音声認識に対応していません。iOSの場合はSafariでご利用ください。'
+        reason: 'お使いのブラウザは音声認識に対応していません。iPhoneではSafariからホーム画面に追加してください。'
       };
     }
 
@@ -52,18 +54,23 @@ class Transcriber {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
 
-    // 既存インスタンスの破棄
+    // 既存インスタンスはハンドラを外してから破棄する（abort の onend で再起動が二重にならない）
     if (this.recognition) {
+      const old = this.recognition;
+      old.onresult = null;
+      old.onerror = null;
+      old.onend = null;
+      this.recognition = null;
       try {
-        this.recognition.abort();
+        old.abort();
       } catch {
         // 無視
       }
-      this.recognition = null;
     }
 
     this.recognition = new SpeechRecognition();
-    this.recognition.continuous = true;
+    // iOS は continuous:true だと確定せずすぐ終わる。false にして onend で作り直す。
+    this.recognition.continuous = !this._isIOS;
     this.recognition.interimResults = true;
     this.recognition.lang = this.language;
     this.recognition.maxAlternatives = 1;
@@ -100,32 +107,28 @@ class Transcriber {
 
     // エラーハンドラ
     this.recognition.onerror = (event) => {
-      console.warn('音声認識イベントエラー:', event.error);
+      const err = event.error || 'error';
+      console.warn('音声認識イベントエラー:', err);
 
-      switch (event.error) {
-        case 'no-speech':
-          if (this.shouldRestart) this._retry();
-          break;
-        case 'audio-capture':
-          if (this.onError) this.onError('マイクにアクセスできません。');
-          this.stop();
-          break;
-        case 'not-allowed':
-          if (this.onError) this.onError('マイクの使用が許可されていません。');
-          this.stop();
-          break;
-        case 'network':
-          if (this.shouldRestart) this._retry();
-          break;
-        default:
-          if (this.shouldRestart) this._retry();
+      if (err === 'no-speech' || err === 'aborted') return;
+
+      if (err === 'audio-capture') {
+        if (this.onError) this.onError('マイクにアクセスできません。');
+        this.stop();
+        return;
       }
+      if (err === 'not-allowed') {
+        if (this.onError) this.onError('マイクの使用が許可されていません。');
+        this.stop();
+        return;
+      }
+      if (this.shouldRestart) this._scheduleRestart();
     };
 
-    // 終了ハンドラ
+    // 終了ハンドラ。iOS スタンドアロンでは発話ごとに終わるので、ここで認識を作り直す。
     this.recognition.onend = () => {
       if (this.shouldRestart && this.isListening) {
-        this._retry();
+        this._scheduleRestart();
       } else {
         this.isListening = false;
         if (this.onEnd) this.onEnd();
@@ -151,7 +154,7 @@ class Transcriber {
   start() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      if (this.onError) this.onError('このブラウザは音声認識に対応していません。Safariで開いてください。');
+      if (this.onError) this.onError('このブラウザは音声認識に対応していません。');
       return false;
     }
 
@@ -161,6 +164,7 @@ class Transcriber {
     this.finalTranscript = '';
     this.interimTranscript = '';
     this.retryCount = 0;
+    this._clearRestartTimer();
     this.shouldRestart = true;
     this.isListening = true;
 
@@ -184,6 +188,7 @@ class Transcriber {
   stop() {
     this.shouldRestart = false;
     this.isListening = false;
+    this._clearRestartTimer();
 
     if (this.recognition) {
       try {
@@ -217,28 +222,53 @@ class Transcriber {
   }
 
   /**
-   * 認識停止時の自動再起動
+   * onend 後に認識インスタンスを作り直して再開する。連続呼び出しは1本にまとめる。
    * @private
    */
-  _retry() {
+  _scheduleRestart() {
+    if (!this.shouldRestart || !this.isListening || this._restartTimer) return;
+
+    const delay = this._isIOS ? 220 : 80;
+    this._restartTimer = setTimeout(() => {
+      this._restartTimer = null;
+      this._restartNow();
+    }, delay);
+  }
+
+  /**
+   * @private
+   */
+  _restartNow() {
     if (!this.shouldRestart || !this.isListening) return;
 
-    this.retryCount++;
-    if (this.retryCount > this.maxRetries) {
-      console.warn('最大リトライ回数に達しました');
+    try {
+      this.init();
+      this.recognition.start();
       this.retryCount = 0;
-    }
-
-    setTimeout(() => {
-      if (this.shouldRestart && this.isListening) {
-        try {
-          this.init();
-          this.recognition.start();
-        } catch (error) {
-          console.warn('音声認識リトライ警告:', error);
-        }
+    } catch (error) {
+      if (error && error.name === 'InvalidStateError') return;
+      console.warn('音声認識リトライ警告:', error);
+      this.retryCount++;
+      if (this.retryCount > this.maxRetries) {
+        this.stop();
+        if (this.onError) this.onError('音声認識を継続できません。もう一度録音を開始してください。');
+        return;
       }
-    }, this.retryDelay);
+      this._restartTimer = setTimeout(() => {
+        this._restartTimer = null;
+        this._restartNow();
+      }, 250);
+    }
+  }
+
+  /**
+   * @private
+   */
+  _clearRestartTimer() {
+    if (this._restartTimer) {
+      clearTimeout(this._restartTimer);
+      this._restartTimer = null;
+    }
   }
 
   /**

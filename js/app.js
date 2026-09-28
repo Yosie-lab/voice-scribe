@@ -61,52 +61,10 @@ class VoiceScribeApp {
   }
 
   /**
-   * 文字起こし機能の対応状況およびiOSスタンドアロンモードを確認
+   * 文字起こし機能の対応状況を確認
    * @private
    */
   _checkTranscriptionSupport() {
-    const isStandalone = window.navigator.standalone === true ||
-      window.matchMedia('(display-mode: standalone)').matches;
-
-    const redirectOverlay = document.getElementById('standalone-redirect-overlay');
-    const copyUrlBtn = document.getElementById('standalone-copy-url-btn');
-    const copiedMsg = document.getElementById('standalone-copied-msg');
-
-    if (isStandalone && redirectOverlay) {
-      redirectOverlay.style.display = 'flex';
-
-      // URLコピーボタン
-      if (copyUrlBtn) {
-        copyUrlBtn.addEventListener('click', async () => {
-          const appUrl = 'https://yosie-lab.github.io/voice-scribe/';
-          try {
-            await navigator.clipboard.writeText(appUrl);
-          } catch {
-            // フォールバック: テキストエリアコピー
-            const ta = document.createElement('textarea');
-            ta.value = appUrl;
-            ta.style.position = 'fixed';
-            ta.style.opacity = '0';
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
-          }
-          copyUrlBtn.textContent = '✅ コピー済み！';
-          copyUrlBtn.style.background = 'rgba(16, 185, 129, 0.8)';
-          if (copiedMsg) copiedMsg.style.display = 'block';
-        });
-      }
-
-      // 「このまま使う」ボタン — オーバーレイを閉じてアプリを使用可能にする
-      const continueBtn = document.getElementById('standalone-continue-btn');
-      if (continueBtn) {
-        continueBtn.addEventListener('click', () => {
-          redirectOverlay.style.display = 'none';
-        });
-      }
-    }
-
     const { available, reason } = Transcriber.checkAvailability();
     const unsupportedEl = document.getElementById('transcript-unsupported');
 
@@ -167,6 +125,9 @@ class VoiceScribeApp {
 
     // 録音エラーコールバック
     this.recorder.onError = (message) => {
+      this.ui.showToast(message, 'error');
+    };
+    this.transcriber.onError = (message) => {
       this.ui.showToast(message, 'error');
     };
   }
