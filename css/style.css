@@ -518,6 +518,8 @@ body::before {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--glass-border);
   background: rgba(0, 0, 0, 0.2);
@@ -1117,6 +1119,7 @@ body::before {
 
 .export-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -1378,6 +1381,12 @@ body::before {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  max-height: min(58dvh, 420px);
+  overflow-y: auto;
+}
+
+.settings-section > .settings-input {
+  width: 100%;
 }
 
 .settings-section {

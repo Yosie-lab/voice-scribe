@@ -199,6 +199,7 @@ class UIManager {
     const placeholderEl = document.getElementById('transcript-placeholder');
     const charCountEl = document.getElementById('char-count');
     const clearBtn = document.getElementById('clear-transcript-btn');
+    const obsidianBtn = document.getElementById('live-obsidian-btn');
     const wrapper = document.getElementById('transcript-content-wrapper');
 
     if (!textEl) return;
@@ -210,9 +211,13 @@ class UIManager {
       charCountEl.textContent = totalText.length;
     }
 
-    // クリアボタン表示制御
+    // クリア / Obsidian保存は、録音停止後に文字があるときだけ出す
+    const showAfterStop = totalText.length > 0 && !isRecording;
     if (clearBtn) {
-      clearBtn.style.display = totalText.length > 0 && !isRecording ? 'inline-flex' : 'none';
+      clearBtn.style.display = showAfterStop ? 'inline-flex' : 'none';
+    }
+    if (obsidianBtn) {
+      obsidianBtn.style.display = showAfterStop ? 'inline-flex' : 'none';
     }
 
     // 空状態のハンドリング
@@ -470,17 +475,37 @@ class UIManager {
     const closeBtn = document.getElementById('settings-modal-close');
     const toggleVisBtn = document.getElementById('toggle-key-visibility-btn');
     const keyInput = document.getElementById('groq-api-key-input');
+    const vaultInput = document.getElementById('obsidian-vault-input');
+    const folderInput = document.getElementById('obsidian-folder-input');
     const testBtn = document.getElementById('test-groq-btn');
     const saveBtn = document.getElementById('save-settings-btn');
     const statusBox = document.getElementById('settings-status-box');
 
     if (!settingsBtn || !this.settingsModal) return;
 
+    const fillObsidianFields = () => {
+      if (!window.ObsidianInbox) return;
+      if (vaultInput) vaultInput.value = ObsidianInbox.getVault();
+      if (folderInput) folderInput.value = ObsidianInbox.getFolder();
+    };
+
+    const persistObsidianFields = () => {
+      if (!window.ObsidianInbox) return;
+      if (vaultInput) ObsidianInbox.setVault(vaultInput.value);
+      if (folderInput) ObsidianInbox.setFolder(folderInput.value);
+      fillObsidianFields();
+    };
+
+    fillObsidianFields();
+    if (vaultInput) vaultInput.addEventListener('change', persistObsidianFields);
+    if (folderInput) folderInput.addEventListener('change', persistObsidianFields);
+
     // 開く
     settingsBtn.addEventListener('click', () => {
       if (window.app && window.app.whisper) {
         if (keyInput) keyInput.value = window.app.whisper.apiKey || '';
       }
+      fillObsidianFields();
       if (statusBox) statusBox.innerHTML = '';
       this.settingsModal.classList.add('active');
     });
@@ -539,6 +564,7 @@ class UIManager {
         if (window.app && window.app.whisper) {
           window.app.whisper.saveApiKey(key);
         }
+        persistObsidianFields();
 
         this.showToast('💾 設定を保存しました', 'success');
         closeSettings();

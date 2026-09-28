@@ -160,6 +160,11 @@ class VoiceScribeApp {
       });
     }
 
+    const liveObsidianBtn = document.getElementById('live-obsidian-btn');
+    if (liveObsidianBtn) {
+      liveObsidianBtn.addEventListener('click', () => this._saveLiveToObsidian());
+    }
+
     // 録音エラーコールバック
     this.recorder.onError = (message) => {
       this.ui.showToast(message, 'error');
@@ -562,6 +567,11 @@ class VoiceScribeApp {
       detailCopyBtn.addEventListener('click', () => this._copyDetailText());
     }
 
+    const detailObsidianBtn = document.getElementById('detail-obsidian-btn');
+    if (detailObsidianBtn) {
+      detailObsidianBtn.addEventListener('click', () => this._saveDetailToObsidian());
+    }
+
     // Whisper再変換ボタン
     const detailWhisperBtn = document.getElementById('detail-whisper-btn');
     if (detailWhisperBtn) {
@@ -835,6 +845,73 @@ class VoiceScribeApp {
     if (progressFill && duration > 0) {
       const percentage = (current / duration) * 100;
       progressFill.style.width = `${percentage}%`;
+    }
+  }
+
+  /**
+   * 録音画面の文字起こしを Obsidian Inbox へ保存
+   * @private
+   */
+  async _saveLiveToObsidian() {
+    const textEl = document.getElementById('transcript-text');
+    const transcript = textEl ? (textEl.innerText || textEl.textContent || '').trim() : '';
+    if (!transcript) {
+      this.ui.showToast('保存する文字起こしがありません', 'info');
+      return;
+    }
+
+    const activeLangBtn = document.querySelector('.lang-btn.active');
+    const language = activeLangBtn ? activeLangBtn.dataset.lang : 'ja-JP';
+    await this._sendToObsidian({
+      title: this._generateTitle(transcript, language),
+      transcript,
+      language
+    });
+  }
+
+  /**
+   * 詳細画面の文字起こしを Obsidian Inbox へ保存
+   * @private
+   */
+  async _saveDetailToObsidian() {
+    if (!this.currentDetailId) return;
+
+    try {
+      const recording = await this.storage.getById(this.currentDetailId);
+      const transcript = (recording && recording.transcript ? recording.transcript : '').trim();
+      if (!recording || !transcript) {
+        this.ui.showToast('保存する文字起こしがありません', 'info');
+        return;
+      }
+
+      await this._sendToObsidian({
+        title: recording.title || 'Voice note',
+        transcript,
+        language: recording.language || 'ja-JP',
+        createdAt: recording.createdAt
+      });
+    } catch (error) {
+      console.error('Obsidian保存エラー:', error);
+      this.ui.showToast('Obsidianへの保存に失敗しました', 'error');
+    }
+  }
+
+  /**
+   * @param {{ title: string, transcript: string, language: string, createdAt?: number }} note
+   * @private
+   */
+  async _sendToObsidian(note) {
+    if (!window.ObsidianInbox) {
+      this.ui.showToast('Obsidian保存を読み込めませんでした', 'error');
+      return;
+    }
+
+    try {
+      const result = await ObsidianInbox.save(note);
+      this.ui.showToast(result.message, result.ok ? 'success' : 'info', 4000);
+    } catch (error) {
+      console.error('Obsidian保存エラー:', error);
+      this.ui.showToast('Obsidianへの保存に失敗しました', 'error');
     }
   }
 

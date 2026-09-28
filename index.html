@@ -16,7 +16,7 @@
   <link rel="apple-touch-icon" href="icons/icon-192.png">
 
   <!-- スタイルシート -->
-  <link rel="stylesheet" href="css/style.css?v=52">
+  <link rel="stylesheet" href="css/style.css?v=53">
 
   <!-- ファビコン -->
   <link rel="icon" href="icons/icon-192.png" type="image/png">
@@ -43,7 +43,7 @@
             <span>一覧</span>
           </button>
         </nav>
-        <button class="settings-header-btn" id="header-settings-btn" title="Groq Whisper設定" aria-label="設定">⚙️</button>
+        <button class="settings-header-btn" id="header-settings-btn" title="設定" aria-label="設定">⚙️</button>
       </div>
     </header>
 
@@ -118,6 +118,7 @@
           <span class="transcript-title-label">📝 リアルタイム文字起こし</span>
           <div class="header-bar-actions">
             <button class="action-pill-btn" id="quick-copy-btn" title="テキストをコピー">📋 コピー</button>
+            <button class="action-pill-btn" id="live-obsidian-btn" title="ObsidianのInboxに保存" aria-label="Obsidianに保存" style="display:none;">📥 Obsidianに保存</button>
             <button class="action-pill-btn" id="clear-transcript-btn" title="クリア" style="display:none;">クリア</button>
           </div>
         </div>
@@ -221,6 +222,7 @@
           <div class="export-actions">
             <button class="export-btn whisper-action" id="detail-whisper-btn" title="録音音声からGroq Whisperで高精度文字起こし">✨ Whisper変換</button>
             <button class="export-btn primary-action" id="detail-copy-btn" title="文字起こしテキストをコピー">📋 コピー</button>
+            <button class="export-btn" id="detail-obsidian-btn" title="ObsidianのInboxに保存" aria-label="Obsidianに保存">📥 Obsidianに保存</button>
             <button class="export-btn" id="export-text-btn" title="テキストファイルとして保存">📄 保存</button>
             <button class="export-btn" id="export-audio-btn" title="音声ファイルを保存">🎵 音声</button>
           </div>
@@ -247,7 +249,7 @@
     <div class="modal-overlay" id="settings-modal-overlay">
       <div class="modal-card settings-modal-card">
         <div class="settings-modal-header">
-          <div class="settings-modal-title">⚙️ Groq Whisper 設定</div>
+          <div class="settings-modal-title">⚙️ 設定</div>
           <button class="settings-modal-close" id="settings-modal-close" aria-label="閉じる">✕</button>
         </div>
 
@@ -276,6 +278,32 @@
             </a>
           </div>
 
+          <div class="settings-section">
+            <label class="settings-label" for="obsidian-vault-input">📥 Obsidian Vault</label>
+            <input
+              type="text"
+              id="obsidian-vault-input"
+              class="settings-input"
+              placeholder="Vault"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+            >
+            <label class="settings-label" for="obsidian-folder-input">Inbox フォルダ</label>
+            <input
+              type="text"
+              id="obsidian-folder-input"
+              class="settings-input"
+              placeholder="01_Inbox"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+            >
+            <p class="settings-hint">
+              文字起こしを <b>obsidian://</b> でこの Vault の Inbox に保存します。初期値は Vault / 01_Inbox。
+            </p>
+          </div>
+
           <div class="settings-status-box" id="settings-status-box"></div>
         </div>
 
@@ -302,12 +330,13 @@
   </div>
 
   <!-- ===== JavaScript モジュール ===== -->
-  <script src="js/storage.js?v=52"></script>
-  <script src="js/recorder.js?v=52"></script>
-  <script src="js/transcriber.js?v=52"></script>
-  <script src="js/whisper.js?v=52"></script>
-  <script src="js/visualizer.js?v=52"></script>
-  <script src="js/ui.js?v=52"></script>
-  <script src="js/app.js?v=52"></script>
+  <script src="js/storage.js?v=53"></script>
+  <script src="js/recorder.js?v=53"></script>
+  <script src="js/transcriber.js?v=53"></script>
+  <script src="js/whisper.js?v=53"></script>
+  <script src="js/visualizer.js?v=53"></script>
+  <script src="js/obsidian.js?v=53"></script>
+  <script src="js/ui.js?v=53"></script>
+  <script src="js/app.js?v=53"></script>
 </body>
 </html>
