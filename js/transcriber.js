@@ -15,6 +15,8 @@ class Transcriber {
     this.maxRetries = 8;
     this._contentionRestarts = 0;
     this._restartTimer = null;
+    this._holdRestart = false;
+    this._engineRunning = false;
     this._isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
@@ -54,6 +56,8 @@ class Transcriber {
   init() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
+
+    this._engineRunning = false;
 
     // 既存インスタンスはハンドラを外してから破棄する（abort の onend で再起動が二重にならない）
     if (this.recognition) {
@@ -118,7 +122,9 @@ class Transcriber {
       // aborted だけで黙って死ぬ（onend が来ないことがある）。録音中なら作り直す。
       // iOS は onend の再生成に任せ、ここは触らない。
       if (err === 'aborted') {
-        if (!this._isIOS && this.shouldRestart && this.isListening) {
+        this._engineRunning = false;
+        // iOS は onend の再生成に任せる。画面ロック中は hold して再起動嵐を止める。
+        if (!this._isIOS && this.shouldRestart && this.isListening && !this._holdRestart) {
           this._contentionRestarts++;
           if (this._contentionRestarts > this.maxRetries) {
             this.stop();
@@ -142,14 +148,16 @@ class Transcriber {
         this.stop();
         return;
       }
-      if (this.shouldRestart) this._scheduleRestart();
+      if (this.shouldRestart && !this._holdRestart) this._scheduleRestart();
     };
 
     // 終了ハンドラ。iOS スタンドアロンでは発話ごとに終わるので、ここで認識を作り直す。
+    // 画面ロック中（hold）は再起動しない。復帰側が releaseHold する。
     this.recognition.onend = () => {
-      if (this.shouldRestart && this.isListening) {
+      this._engineRunning = false;
+      if (this.shouldRestart && this.isListening && !this._holdRestart) {
         this._scheduleRestart();
-      } else {
+      } else if (!(this.shouldRestart && this.isListening)) {
         this.isListening = false;
         if (this.onEnd) this.onEnd();
       }
@@ -194,20 +202,24 @@ class Transcriber {
     this.interimTranscript = '';
     this.retryCount = 0;
     this._contentionRestarts = 0;
+    this._holdRestart = false;
     this._clearRestartTimer();
     this.shouldRestart = true;
     this.isListening = true;
 
     try {
       this.recognition.start();
+      this._engineRunning = true;
       console.log(`音声文字起こし開始 (${this.language})`);
       return true;
     } catch (error) {
       console.warn('文字起こしstart警告:', error);
       if (error.name === 'InvalidStateError') {
+        this._engineRunning = true;
         return true;
       }
       this.isListening = false;
+      this._engineRunning = false;
       return false;
     }
   }
@@ -218,6 +230,8 @@ class Transcriber {
   stop() {
     this.shouldRestart = false;
     this.isListening = false;
+    this._holdRestart = false;
+    this._engineRunning = false;
     this._clearRestartTimer();
 
     if (this.recognition) {
@@ -252,12 +266,57 @@ class Transcriber {
   }
 
   /**
+   * 画面が隠れている間、認識の再起動を止める。テキストは消さない。
+   * iOS はバックグラウンドで start() し続けると認識が死に、復帰後も操作不能になる。
+   */
+  hold() {
+    this._holdRestart = true;
+    this._clearRestartTimer();
+  }
+
+  /**
+   * ユーザー一時停止。再起動フラグは残し、エンジンだけ止める。
+   * 再開は resumeListening()。start() は確定テキストを消すので使わない。
+   */
+  pauseListening() {
+    this.hold();
+    if (!this.recognition) return;
+    try {
+      this.recognition.stop();
+    } catch {
+      // すでに止まっている
+    }
+  }
+
+  /**
+   * hold を解き、エンジンが止まっていれば一度だけ作り直す。
+   */
+  releaseHold() {
+    this._holdRestart = false;
+    if (this.shouldRestart && this.isListening && !this._engineRunning) {
+      this._scheduleRestart(this._isIOS ? 220 : 80);
+    }
+  }
+
+  /**
+   * 一時停止ボタン（▶️）から、タップの同期で認識を戻す。確定テキストは消さない。
+   */
+  resumeListening() {
+    this._holdRestart = false;
+    this._clearRestartTimer();
+    if (!this.isListening) this.isListening = true;
+    if (!this.shouldRestart) this.shouldRestart = true;
+    if (this._engineRunning) return;
+    this._restartNow();
+  }
+
+  /**
    * onend 後に認識インスタンスを作り直して再開する。連続呼び出しは1本にまとめる。
    * @param {number} [delayMs]
    * @private
    */
   _scheduleRestart(delayMs) {
-    if (!this.shouldRestart || !this.isListening || this._restartTimer) return;
+    if (this._holdRestart || !this.shouldRestart || !this.isListening || this._restartTimer) return;
 
     const delay = typeof delayMs === 'number' ? delayMs : (this._isIOS ? 220 : 80);
     this._restartTimer = setTimeout(() => {
@@ -275,6 +334,7 @@ class Transcriber {
     try {
       this.init();
       this.recognition.start();
+      this._engineRunning = true;
       this.retryCount = 0;
     } catch (error) {
       if (error && error.name === 'InvalidStateError') return;

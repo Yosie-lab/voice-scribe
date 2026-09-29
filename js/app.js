@@ -20,6 +20,11 @@ class VoiceScribeApp {
     this.currentAudio = null;
     this.currentAudioUrl = null;
     this.playbackInterval = null;
+    this._endingSession = null;
+    this._userPaused = false;
+    this._captureInterrupted = false;
+    this._muteGraceTimer = null;
+    this._transcriptEpoch = 0;
 
     window.app = this;
   }
@@ -47,6 +52,7 @@ class VoiceScribeApp {
       this._setupRecordView();
       this._setupListView();
       this._setupDetailView();
+      this._installLifecycleGuards();
 
       // 音声認識対応状況の確認
       this._checkTranscriptionSupport();
@@ -112,7 +118,13 @@ class VoiceScribeApp {
     const clearBtn = document.getElementById('clear-transcript-btn');
     if (clearBtn) {
       clearBtn.addEventListener('click', () => {
-        if (this.isRecording) return;
+        if (this.isRecording) {
+          if (!this.recorder.isCaptureAlive()) {
+            this._endRecordingSession({ interrupted: true });
+          }
+          return;
+        }
+        this._transcriptEpoch++;
         this.ui.updateTranscript('', '', false);
         this.transcriber.reset();
       });
@@ -127,6 +139,18 @@ class VoiceScribeApp {
     this.recorder.onError = (message) => {
       this.ui.showToast(message, 'error');
     };
+    this.recorder.onCaptureLost = () => {
+      if (!this.isRecording) return;
+      this._endRecordingSession({ interrupted: true });
+    };
+    this.recorder.onCaptureResumed = () => {
+      this._resumeLiveCapture();
+    };
+    this.recorder.onCaptureMuted = () => {
+      if (!this.isRecording) return;
+      this._captureInterrupted = true;
+      this.transcriber.hold();
+    };
     this.transcriber.onError = (message) => {
       this.ui.showToast(message, 'error');
     };
@@ -137,8 +161,12 @@ class VoiceScribeApp {
    * @private
    */
   async _toggleRecording() {
+    if (this._endingSession) {
+      await this._endingSession;
+      return;
+    }
     if (this.isRecording) {
-      await this._stopRecording();
+      await this._endRecordingSession({ interrupted: false });
     } else {
       await this._startRecording();
     }
@@ -150,6 +178,11 @@ class VoiceScribeApp {
    */
   async _startRecording() {
     this.isRecording = true;
+    this._userPaused = false;
+    this._captureInterrupted = false;
+    this._clearMuteGrace();
+    // Screen Wake Lock は使わない。iOS の割り込みは audioSession の state で受ける。
+    this._setAudioSessionType('play-and-record');
     this.currentRecordingId = StorageManager.generateId();
     this.ui.setRecordingStatus('recording');
     this._startTimer();
@@ -181,6 +214,7 @@ class VoiceScribeApp {
       const stream = await this.recorder.start();
       if (!this.isRecording) {
         try { await this.recorder.stop(); } catch { /* 停止済み */ }
+        this._setAudioSessionType('auto');
         return;
       }
       if (this.visualizer && stream) {
@@ -191,7 +225,10 @@ class VoiceScribeApp {
       console.warn('MediaRecorder start warning:', recErr);
     }
 
-    if (!this.isRecording) return;
+    if (!this.isRecording) {
+      this._setAudioSessionType('auto');
+      return;
+    }
 
     if (!recognitionFirst) {
       try {
@@ -201,126 +238,303 @@ class VoiceScribeApp {
       }
     }
 
-    // 言語ボタンを一時無効化
-    document.querySelectorAll('.lang-btn').forEach((btn) => {
-      btn.style.pointerEvents = 'none';
-      btn.style.opacity = '0.5';
-    });
+    this._setLanguageButtonsEnabled(false);
 
     this.ui.showToast('🎙️ 録音中（お話しください）', 'success', 2000);
   }
 
   /**
-   * 録音を停止して保存（Groq Whisper連携付き）
+   * 録音を停止して保存する。画面ロック等の割り込みもここへ寄せ、UI を必ず待機状態に戻す。
+   * @param {{ interrupted?: boolean }} [options]
+   * @returns {Promise<void>}
    * @private
    */
-  async _stopRecording() {
-    try {
-      // 1. 停止前にSafari文字起こしテキストを取得
-      let transcript = (this.transcriber.getFullTranscript() || '').trim();
-      if (!transcript) {
-        const textEl = document.getElementById('transcript-text');
-        if (textEl) {
-          transcript = (textEl.innerText || textEl.textContent || '').trim();
+  _endRecordingSession(options) {
+    if (this._endingSession) return this._endingSession;
+    const interrupted = !!(options && options.interrupted);
+    this._endingSession = this._endRecordingSessionBody(interrupted)
+      .catch((error) => {
+        console.error('録音終了エラー:', error);
+        this.isRecording = false;
+        if (this.ui) this.ui.showToast('録音の終了処理に失敗しました', 'error');
+        this._userPaused = false;
+        this._captureInterrupted = false;
+        this._clearMuteGrace();
+        this._stopTimer();
+        this.transcriber.stop();
+        this._setLanguageButtonsEnabled(true);
+        this._setAudioSessionType('auto');
+        if (this.ui) {
+          this.ui.setRecordingStatus('standby');
+          if (this.ui.hideWhisperOverlay) this.ui.hideWhisperOverlay();
         }
-      }
-
-      // 文字起こし停止
-      this.transcriber.stop();
-
-      // 音声録音停止
-      let audioBlob = null;
-      let audioMime = 'audio/mp4';
-      try {
-        const recResult = await this.recorder.stop();
-        if (recResult) {
-          audioBlob = recResult.blob;
-          audioMime = recResult.mimeType || 'audio/mp4';
-        }
-      } catch (e) {
-        console.warn('Recorder stop warning:', e);
-      }
-
-      this.isRecording = false;
-      this._stopTimer();
-
-      // ビジュアライザー停止
-      if (this.visualizer) {
-        try {
-          this.visualizer.disconnect();
-          this.visualizer.startIdleAnimation();
-        } catch (e) {
-          console.warn('Visualizer disconnect warning:', e);
-        }
-      }
-
-      // UI更新
-      this.ui.setRecordingStatus('standby');
-
-      // 言語選択ボタンを再有効化
-      document.querySelectorAll('.lang-btn').forEach((btn) => {
-        btn.style.pointerEvents = '';
-        btn.style.opacity = '';
+      })
+      .finally(() => {
+        this._endingSession = null;
       });
+    return this._endingSession;
+  }
 
-      const activeLangBtn = document.querySelector('.lang-btn.active');
-      const language = activeLangBtn ? activeLangBtn.dataset.lang : 'ja-JP';
-      const duration = this.recorder.getElapsedTime() || 0;
+  /**
+   * @param {boolean} interrupted
+   * @private
+   */
+  async _endRecordingSessionBody(interrupted) {
+    this._clearMuteGrace();
+    this._userPaused = false;
+    this._captureInterrupted = false;
 
-      // データを保存
-      if (transcript || audioBlob) {
-        let finalTranscript = transcript;
+    let transcript = (this.transcriber.getFullTranscript() || '').trim();
+    if (!transcript) {
+      const textEl = document.getElementById('transcript-text');
+      if (textEl) {
+        transcript = (textEl.innerText || textEl.textContent || '').trim();
+      }
+    }
 
-        // Groq Whisper APIキーがある場合、録音音声から100%忠実な文字起こしを爆速実行
-        if (this.whisper.hasApiKey() && audioBlob) {
-          try {
-            this.ui.showWhisperOverlay();
-            const whisperText = await this.whisper.transcribeAudio(audioBlob, language);
-            if (whisperText && whisperText.trim()) {
-              finalTranscript = whisperText.trim();
-            }
-          } catch (whisperErr) {
-            console.warn('Whisper自動文字起こし警告:', whisperErr);
-            this.ui.showToast(`Whisperスキップ: ${whisperErr.message}`, 'info', 3000);
-          } finally {
-            this.ui.hideWhisperOverlay();
+    const activeLangBtn = document.querySelector('.lang-btn.active');
+    const language = activeLangBtn ? activeLangBtn.dataset.lang : 'ja-JP';
+    const duration = this.recorder.getElapsedTime() || 0;
+
+    this.transcriber.stop();
+    // Stop / Whisper を待つ前に操作を戻す。ロック後の Clear・再生がここで死んでいた。
+    this.isRecording = false;
+    this._stopTimer();
+    this._setLanguageButtonsEnabled(true);
+    this.ui.setRecordingStatus('standby');
+    this.ui.updateTranscript(transcript, '', false);
+
+    let audioBlob = null;
+    let audioMime = 'audio/mp4';
+    try {
+      const recResult = await this.recorder.stop();
+      if (recResult) {
+        audioBlob = recResult.blob;
+        audioMime = recResult.mimeType || 'audio/mp4';
+      }
+    } catch (e) {
+      console.warn('Recorder stop warning:', e);
+    }
+
+    if (this.visualizer) {
+      try {
+        this.visualizer.disconnect();
+        this.visualizer.startIdleAnimation();
+      } catch (e) {
+        console.warn('Visualizer disconnect warning:', e);
+      }
+    }
+
+    this._setAudioSessionType('auto');
+
+    const epoch = this._transcriptEpoch;
+    if (transcript || audioBlob) {
+      let finalTranscript = transcript;
+
+      // 割り込み時は Whisper オーバーレイで操作を塞がない。詳細画面から再変換できる。
+      if (!interrupted && this.whisper.hasApiKey() && audioBlob) {
+        try {
+          this.ui.showWhisperOverlay();
+          const whisperText = await this.whisper.transcribeAudio(audioBlob, language);
+          if (whisperText && whisperText.trim()) {
+            finalTranscript = whisperText.trim();
           }
+        } catch (whisperErr) {
+          console.warn('Whisper自動文字起こし警告:', whisperErr);
+          this.ui.showToast(`Whisperスキップ: ${whisperErr.message}`, 'info', 3000);
+        } finally {
+          this.ui.hideWhisperOverlay();
         }
+      }
 
-        // 日本語テキストで文末に句読点がない場合、自然に「。」を付与
-        if (language === 'ja-JP' && finalTranscript && !/[。、！？!?\n]$/.test(finalTranscript)) {
-          finalTranscript += '。';
-        }
+      if (language === 'ja-JP' && finalTranscript && !/[。、！？!?\n]$/.test(finalTranscript)) {
+        finalTranscript += '。';
+      }
 
-        const recording = {
-          id: this.currentRecordingId,
-          title: this._generateTitle(finalTranscript, language),
-          audioBlob: audioBlob,
-          mimeType: audioMime,
-          transcript: finalTranscript,
-          language: language,
-          duration: duration,
-          createdAt: Date.now()
-        };
+      const recording = {
+        id: this.currentRecordingId,
+        title: this._generateTitle(finalTranscript, language),
+        audioBlob: audioBlob,
+        mimeType: audioMime,
+        transcript: finalTranscript,
+        language: language,
+        duration: duration,
+        createdAt: Date.now()
+      };
 
-        await this.storage.save(recording);
-        await this._refreshRecordingsList();
-        this.ui.showToast('✅ 録音と文字起こしを保存しました', 'success');
+      await this.storage.save(recording);
+      await this._refreshRecordingsList();
 
-        // 画面のテキストも最新に更新
-        this.ui.updateTranscript(finalTranscript, '', false);
+      if (interrupted) {
+        this.ui.showToast('録音が中断されました。ここまでを保存しました。一覧から再生できます。', 'info', 4000);
       } else {
+        this.ui.showToast('✅ 録音と文字起こしを保存しました', 'success');
+      }
+
+      if (epoch === this._transcriptEpoch) {
+        this.ui.updateTranscript(finalTranscript, '', false);
+      }
+    } else if (interrupted) {
+      this.ui.showToast('録音が中断されました', 'info', 3000);
+      if (epoch === this._transcriptEpoch) {
         this.ui.updateTranscript(transcript, '', false);
       }
-
-      this.ui.updateTimer(0);
-    } catch (error) {
-      console.error('録音停止エラー:', error);
-      this.isRecording = false;
-      this.ui.setRecordingStatus('standby');
-      this._stopTimer();
-      if (this.ui.hideWhisperOverlay) this.ui.hideWhisperOverlay();
+    } else if (epoch === this._transcriptEpoch) {
+      this.ui.updateTranscript(transcript, '', false);
     }
+
+    this.ui.updateTimer(0);
+  }
+
+  /**
+   * @param {boolean} enabled
+   * @private
+   */
+  _setLanguageButtonsEnabled(enabled) {
+    document.querySelectorAll('.lang-btn').forEach((btn) => {
+      btn.style.pointerEvents = enabled ? '' : 'none';
+      btn.style.opacity = enabled ? '' : '0.5';
+    });
+  }
+
+  /**
+   * Safari の audio session（AVAudioSession 相当）。未対応ブラウザでは何もしない。
+   * @param {'auto'|'playback'|'play-and-record'} type
+   * @private
+   */
+  _setAudioSessionType(type) {
+    const session = navigator.audioSession;
+    if (!session) return;
+    try {
+      if (session.type !== type) session.type = type;
+    } catch (error) {
+      console.warn('audioSession type 設定をスキップ:', error);
+    }
+  }
+
+  /**
+   * 画面ロック / バックグラウンド / 音声割り込みを監視する。
+   * @private
+   */
+  _installLifecycleGuards() {
+    const markInterrupted = () => {
+      if (!this.isRecording) return;
+      this._captureInterrupted = true;
+      this.transcriber.hold();
+      if (!this.recorder.isCaptureAlive()) {
+        this._endRecordingSession({ interrupted: true });
+      }
+    };
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        markInterrupted();
+      } else {
+        this._reconcileRecordingSession();
+      }
+    });
+
+    window.addEventListener('pagehide', markInterrupted);
+    window.addEventListener('pageshow', () => this._reconcileRecordingSession());
+    document.addEventListener('freeze', markInterrupted);
+    document.addEventListener('resume', () => this._reconcileRecordingSession());
+
+    const session = navigator.audioSession;
+    if (session && typeof session.addEventListener === 'function') {
+      session.addEventListener('statechange', () => {
+        if (!this.isRecording) return;
+        if (session.state === 'interrupted') {
+          this._captureInterrupted = true;
+          this.transcriber.hold();
+        } else {
+          this._reconcileRecordingSession();
+        }
+      });
+    }
+  }
+
+  /**
+   * ロック解除後、キャプチャが生きていれば続行し、死んでいれば保存して操作を戻す。
+   * @private
+   */
+  _reconcileRecordingSession() {
+    if (!this.isRecording || this._endingSession) return;
+
+    if (!this.recorder.isCaptureAlive()) {
+      this._endRecordingSession({ interrupted: true });
+      return;
+    }
+
+    const native = this.recorder.syncNativeState();
+
+    if (this._captureInterrupted && this.recorder.isInputMuted()) {
+      const showPaused = native === 'paused' || this._userPaused;
+      this.ui.setRecordingStatus(showPaused ? 'paused' : 'recording');
+      if (showPaused) this._stopTimer();
+      this.transcriber.hold();
+      this._scheduleMuteGrace();
+      return;
+    }
+
+    if (this._userPaused || native === 'paused') {
+      this.ui.setRecordingStatus('paused');
+      this.transcriber.hold();
+      this._stopTimer();
+      return;
+    }
+
+    this._resumeLiveCapture();
+  }
+
+  /**
+   * ロック直後はトラックが muted のまま残ることがある。少し待ってから死活を決める。
+   * @private
+   */
+  _scheduleMuteGrace() {
+    if (this._muteGraceTimer) return;
+    this._muteGraceTimer = setTimeout(() => {
+      this._muteGraceTimer = null;
+      if (!this.isRecording || this._endingSession) return;
+      if (!this.recorder.isCaptureAlive() || this.recorder.isInputMuted()) {
+        this._endRecordingSession({ interrupted: true });
+        return;
+      }
+      this._resumeLiveCapture();
+    }, 700);
+  }
+
+  /**
+   * @private
+   */
+  _clearMuteGrace() {
+    if (this._muteGraceTimer) {
+      clearTimeout(this._muteGraceTimer);
+      this._muteGraceTimer = null;
+    }
+  }
+
+  /**
+   * マイクがまだ生きているときの復帰。確定テキストは消さない。
+   * @private
+   */
+  _resumeLiveCapture() {
+    if (!this.isRecording || this._endingSession || this._userPaused) return;
+    if (!this.recorder.isCaptureAlive() || this.recorder.isInputMuted()) return;
+
+    this._clearMuteGrace();
+    const native = this.recorder.syncNativeState();
+    if (native === 'paused') {
+      this.ui.setRecordingStatus('paused');
+      this.transcriber.hold();
+      this._stopTimer();
+      return;
+    }
+
+    this._captureInterrupted = false;
+    this.transcriber.releaseHold();
+    this.ui.setRecordingStatus('recording');
+    this._startTimer();
+    if (this.visualizer) this.visualizer.resume();
   }
 
   /**
@@ -329,27 +543,51 @@ class VoiceScribeApp {
    */
   async _togglePause() {
     if (!this.isRecording) return;
+    if (this._endingSession) {
+      await this._endingSession;
+      return;
+    }
 
-    const pauseBtn = document.getElementById('pause-btn');
+    if (!this.recorder.isCaptureAlive() || (this._captureInterrupted && this.recorder.isInputMuted())) {
+      await this._endRecordingSession({ interrupted: true });
+      return;
+    }
 
-    if (this.recorder.state === 'recording') {
-      this.recorder.pause();
-      this.transcriber.stop();
+    const native = this.recorder.getNativeState();
+
+    if (native === 'recording') {
+      const paused = this.recorder.pause();
+      if (!paused) {
+        await this._endRecordingSession({ interrupted: true });
+        return;
+      }
+      this._userPaused = true;
+      this.transcriber.pauseListening();
       this._stopTimer();
       this.ui.setRecordingStatus('paused');
-      if (pauseBtn) pauseBtn.textContent = '▶️';
       if (this.visualizer) this.visualizer.startIdleAnimation();
-    } else if (this.recorder.state === 'paused') {
-      this.recorder.resume();
-      this.transcriber.start();
+      return;
+    }
+
+    if (native === 'paused') {
+      const resumed = this.recorder.resume();
+      if (!resumed) {
+        await this._endRecordingSession({ interrupted: true });
+        return;
+      }
+      this._userPaused = false;
+      this._captureInterrupted = false;
+      this.transcriber.resumeListening();
       this._startTimer();
       this.ui.setRecordingStatus('recording');
-      if (pauseBtn) pauseBtn.textContent = '⏸️';
       if (this.visualizer && this.recorder.stream) {
         this.visualizer.stopIdleAnimation();
         await this.visualizer.connectStream(this.recorder.stream);
       }
+      return;
     }
+
+    await this._endRecordingSession({ interrupted: true });
   }
 
   /**
@@ -673,6 +911,16 @@ class VoiceScribeApp {
    */
   async _startPlayback() {
     if (!this.currentDetailId) return;
+
+    if (this._endingSession) {
+      await this._endingSession;
+    } else if (this.isRecording && !this.recorder.isCaptureAlive()) {
+      await this._endRecordingSession({ interrupted: true });
+    } else if (this.isRecording && this._captureInterrupted && this.recorder.isInputMuted()) {
+      await this._endRecordingSession({ interrupted: true });
+    }
+
+    this._setAudioSessionType(this.isRecording ? 'play-and-record' : 'auto');
 
     try {
       const recording = await this.storage.getById(this.currentDetailId);

@@ -160,6 +160,20 @@ class AudioVisualizer {
   }
 
   /**
+   * 画面ロックで suspended になった AudioContext を、キャプチャがまだ生きていれば戻す。
+   */
+  async resume() {
+    if (!this.audioCtx || this.audioCtx.state === 'closed') return;
+    if (this.audioCtx.state === 'suspended') {
+      try {
+        await this.audioCtx.resume();
+      } catch (error) {
+        console.warn('AudioContext resume警告:', error);
+      }
+    }
+  }
+
+  /**
    * ビジュアライザーを切断・リソース解放
    */
   disconnect() {
