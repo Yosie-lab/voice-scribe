@@ -15,6 +15,11 @@ class Transcriber {
     this.maxRetries = 8;
     this._contentionRestarts = 0;
     this._restartTimer = null;
+    this._hold = false;
+    this._engineRunning = false;
+    this._resumeWhenVisible = false;
+    this._engineWasStarted = false;
+    this._captureErrorNotified = false;
     this._isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
@@ -80,6 +85,7 @@ class Transcriber {
     this.recognition.onresult = (event) => {
       this.retryCount = 0;
       this._contentionRestarts = 0;
+      this._captureErrorNotified = false;
 
       let currentInterim = '';
       let currentFinal = '';
@@ -118,6 +124,8 @@ class Transcriber {
       // aborted だけで黙って死ぬ（onend が来ないことがある）。録音中なら作り直す。
       // iOS は onend の再生成に任せ、ここは触らない。
       if (err === 'aborted') {
+        this._engineRunning = false;
+        if (this._deferWhileHidden()) return;
         if (!this._isIOS && this.shouldRestart && this.isListening) {
           this._contentionRestarts++;
           if (this._contentionRestarts > this.maxRetries) {
@@ -133,11 +141,33 @@ class Transcriber {
       }
 
       if (err === 'audio-capture') {
+        this._engineRunning = false;
+        // 画面ロックはマイクを奪う。stop() すると復帰できなくなるので、録音セッション中は殺さない。
+        if (this._deferWhileHidden()) return;
+        if (this.shouldRestart && this.isListening) {
+          this.retryCount++;
+          if (this.retryCount <= this.maxRetries) {
+            this._scheduleRestart(300);
+            return;
+          }
+          this._resumeWhenVisible = true;
+          if (!this._captureErrorNotified) {
+            this._captureErrorNotified = true;
+            if (this.onError) this.onError('音声認識が中断されました。録音は継続しています。');
+          }
+          return;
+        }
         if (this.onError) this.onError('マイクにアクセスできません。');
         this.stop();
         return;
       }
       if (err === 'not-allowed') {
+        this._engineRunning = false;
+        if (this._deferWhileHidden()) return;
+        if (this.shouldRestart && this.isListening && this._engineWasStarted) {
+          this._resumeWhenVisible = true;
+          return;
+        }
         if (this.onError) this.onError('マイクの使用が許可されていません。');
         this.stop();
         return;
@@ -147,6 +177,11 @@ class Transcriber {
 
     // 終了ハンドラ。iOS スタンドアロンでは発話ごとに終わるので、ここで認識を作り直す。
     this.recognition.onend = () => {
+      this._engineRunning = false;
+      if (this._hold || document.visibilityState === 'hidden') {
+        if (this.shouldRestart && this.isListening) this._resumeWhenVisible = true;
+        return;
+      }
       if (this.shouldRestart && this.isListening) {
         this._scheduleRestart();
       } else {
@@ -195,16 +230,21 @@ class Transcriber {
     this.retryCount = 0;
     this._contentionRestarts = 0;
     this._clearRestartTimer();
+    this._hold = false;
+    this._resumeWhenVisible = false;
     this.shouldRestart = true;
     this.isListening = true;
 
     try {
       this.recognition.start();
+      this._engineRunning = true;
+      this._engineWasStarted = true;
       console.log(`音声文字起こし開始 (${this.language})`);
       return true;
     } catch (error) {
       console.warn('文字起こしstart警告:', error);
       if (error.name === 'InvalidStateError') {
+        this._engineRunning = true;
         return true;
       }
       this.isListening = false;
@@ -218,6 +258,9 @@ class Transcriber {
   stop() {
     this.shouldRestart = false;
     this.isListening = false;
+    this._engineRunning = false;
+    this._hold = false;
+    this._resumeWhenVisible = false;
     this._clearRestartTimer();
 
     if (this.recognition) {
@@ -241,6 +284,61 @@ class Transcriber {
       return `${final} ${interim}`;
     }
     return final || interim || '';
+  }
+
+  /**
+   * 画面が隠れたあいだ、確定テキストを消さずに再起動ループを止める。
+   */
+  holdForBackground() {
+    if (!this.isListening && !this.shouldRestart) return;
+    this._hold = true;
+    this._clearRestartTimer();
+  }
+
+  /**
+   * ロック解除後に、同じ確定テキストのまま認識だけ付け直す。
+   */
+  resumeAfterBackground() {
+    const held = this._hold || this._resumeWhenVisible;
+    this._hold = false;
+    if (document.visibilityState === 'hidden') return;
+    if (!this.shouldRestart || !this.isListening) {
+      if (!held) return;
+      this.shouldRestart = true;
+      this.isListening = true;
+    }
+    this.retryCount = 0;
+    this._contentionRestarts = 0;
+    if (this._engineRunning) {
+      this._resumeWhenVisible = false;
+      return;
+    }
+    this.continueListening();
+  }
+
+  /**
+   * 一時停止からの再開。start() と違い、確定テキストは消さない。
+   * @returns {boolean}
+   */
+  continueListening() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return false;
+    this.shouldRestart = true;
+    this.isListening = true;
+    this._hold = false;
+    this._resumeWhenVisible = false;
+    this.retryCount = 0;
+    this._contentionRestarts = 0;
+    this._clearRestartTimer();
+    this._restartNow();
+    return true;
+  }
+
+  /**
+   * @returns {boolean}
+   */
+  isEngineRunning() {
+    return this._engineRunning;
   }
 
   /**
@@ -269,12 +367,29 @@ class Transcriber {
   /**
    * @private
    */
+  _deferWhileHidden() {
+    if (this._hold || document.visibilityState === 'hidden') {
+      if (this.shouldRestart && this.isListening) this._resumeWhenVisible = true;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * @private
+   */
   _restartNow() {
     if (!this.shouldRestart || !this.isListening) return;
+    if (this._hold || document.visibilityState === 'hidden') {
+      this._resumeWhenVisible = true;
+      return;
+    }
 
     try {
       this.init();
       this.recognition.start();
+      this._engineRunning = true;
+      this._resumeWhenVisible = false;
       this.retryCount = 0;
     } catch (error) {
       if (error && error.name === 'InvalidStateError') return;
