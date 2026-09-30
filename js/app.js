@@ -30,6 +30,9 @@ class VoiceScribeApp {
     this._recovering = false;
     this._whisperBusy = false;
     this._stopPromise = null;
+    this._speechWatch = null;
+    this._speechFloor = 0.012;
+    this._speechHotMs = 0;
 
     window.app = this;
   }
@@ -223,6 +226,9 @@ class VoiceScribeApp {
       }
     }
 
+    if (!this.isRecording) return;
+    this._startSpeechWatch();
+
     // 言語ボタンを一時無効化
     document.querySelectorAll('.lang-btn').forEach((btn) => {
       btn.style.pointerEvents = 'none';
@@ -250,6 +256,7 @@ class VoiceScribeApp {
    * @private
    */
   async _stopRecordingBody() {
+    this._stopSpeechWatch();
     this._recoverGen++;
     if (this._recoverTimer) {
       clearTimeout(this._recoverTimer);
@@ -345,6 +352,7 @@ class VoiceScribeApp {
     this.isRecording = false;
     this._userPaused = false;
     this._backgrounded = false;
+    this._stopSpeechWatch();
     this._releaseWakeLock();
     this._stopTimer();
 
@@ -444,6 +452,63 @@ class VoiceScribeApp {
     if (this.visualizer && stream) {
       this.visualizer.stopIdleAnimation();
       await this.visualizer.connectStream(stream);
+    }
+  }
+
+  /**
+   * 録音ストリームの音量だけを見る。認識が落ちている隙間や、結果が来ない小さい声で付け直す。
+   * SpeechRecognition 用に別の getUserMedia は開かない。
+   * @private
+   */
+  _startSpeechWatch() {
+    this._stopSpeechWatch();
+    this._speechFloor = 0.012;
+    this._speechHotMs = 0;
+    this._speechWatch = setInterval(() => this._pollSpeechLevel(), 200);
+  }
+
+  /**
+   * @private
+   */
+  _stopSpeechWatch() {
+    if (this._speechWatch) {
+      clearInterval(this._speechWatch);
+      this._speechWatch = null;
+    }
+    this._speechHotMs = 0;
+  }
+
+  /**
+   * @private
+   */
+  _pollSpeechLevel() {
+    if (!this.isRecording || this._userPaused || document.visibilityState === 'hidden') {
+      this._speechHotMs = 0;
+      return;
+    }
+    if (!this.visualizer || typeof this.visualizer.getSpeechLevel !== 'function') return;
+    const level = this.visualizer.getSpeechLevel();
+    if (level == null || Number.isNaN(level)) return;
+
+    const speaking = level > Math.max(0.018, this._speechFloor * 3.2);
+    if (!speaking) {
+      this._speechFloor = this._speechFloor * 0.96 + level * 0.04;
+      this._speechHotMs = 0;
+      return;
+    }
+
+    this._speechHotMs += 200;
+    if (this._speechHotMs < 600) return;
+
+    if (!this.transcriber.isEngineRunning()) {
+      this.transcriber.nudge('gap');
+      this._speechHotMs = 0;
+      return;
+    }
+    // 走り始めの発話は切らない。2秒以上、結果も speechstart も無いときだけ付け直す。
+    if (this._speechHotMs >= 2000 && this.transcriber.msSinceResult() >= 2500) {
+      this.transcriber.nudge('stall');
+      this._speechHotMs = 0;
     }
   }
 

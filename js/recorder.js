@@ -50,6 +50,26 @@ class AudioRecorder {
   }
 
   /**
+   * 録音用マイク。SpeechRecognition は別キャプチャなので、ここを増幅しても
+   * 認識入力そのものには乗らない。共有デバイスの AGC / 抑制だけを強める。
+   * ideal なので非対応でも getUserMedia は失敗させない。
+   * @returns {MediaTrackConstraints}
+   */
+  static speechAudioConstraints() {
+    return {
+      echoCancellation: { ideal: true },
+      noiseSuppression: { ideal: true },
+      autoGainControl: { ideal: true },
+      channelCount: { ideal: 1 },
+      sampleRate: { ideal: 48000 },
+      googAutoGainControl: true,
+      googNoiseSuppression: true,
+      googHighpassFilter: true,
+      googEchoCancellation: true
+    };
+  }
+
+  /**
    * 音声録音を開始
    * @returns {Promise<MediaStream>}
    */
@@ -60,13 +80,7 @@ class AudioRecorder {
       this.segments = [];
       this._configureAudioSession(true);
 
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
+      this.stream = await this._openMic();
 
       this.audioChunks = [];
       this.mimeType = AudioRecorder.getSupportedMimeType();
@@ -233,13 +247,7 @@ class AudioRecorder {
     const track = this.stream && this.stream.getAudioTracks()[0];
     if (!track || track.readyState !== 'live') {
       this._cleanupStream();
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
+      this.stream = await this._openMic();
       this._watchStream(this.stream);
     }
 
@@ -441,6 +449,54 @@ class AudioRecorder {
       }
     }
     return new Blob([buffer], { type: 'audio/wav' });
+  }
+
+  /**
+   * 録音用にマイクを1本だけ開く。認識用の別キャプチャは作らない。
+   * 強い制約が拒否されたときだけ、従来の AGC 指定で開き直す。
+   * @returns {Promise<MediaStream>}
+   * @private
+   */
+  async _openMic() {
+    const advanced = { audio: AudioRecorder.speechAudioConstraints() };
+    const basic = {
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
+    };
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(advanced);
+      this._tuneSpeechTrack(stream);
+      return stream;
+    } catch (error) {
+      const name = error && error.name;
+      if (name === 'NotAllowedError' || name === 'NotFoundError' || name === 'NotReadableError') throw error;
+      const stream = await navigator.mediaDevices.getUserMedia(basic);
+      this._tuneSpeechTrack(stream);
+      return stream;
+    }
+  }
+
+  /**
+   * ブラウザが AGC を落とていたら、同じトラックへ付け直す。
+   * @param {MediaStream} stream
+   * @private
+   */
+  _tuneSpeechTrack(stream) {
+    const track = stream && stream.getAudioTracks()[0];
+    if (!track || typeof track.applyConstraints !== 'function') return;
+    const settings = typeof track.getSettings === 'function' ? track.getSettings() : {};
+    const explicitOff = ['autoGainControl', 'noiseSuppression', 'echoCancellation']
+      .some((key) => settings[key] === false);
+    if (!explicitOff) return;
+    track.applyConstraints({
+      echoCancellation: { ideal: true },
+      noiseSuppression: { ideal: true },
+      autoGainControl: { ideal: true },
+      channelCount: { ideal: 1 }
+    }).catch(() => {});
   }
 
   /**

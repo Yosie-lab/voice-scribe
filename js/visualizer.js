@@ -63,6 +63,13 @@ class AudioVisualizer {
 
       this.source = this.audioCtx.createMediaStreamSource(stream);
       this.source.connect(this.analyser);
+      // 波形用とは別に、小さい声の有無を見るための窓。同じストリームで、getUserMedia は増やさない。
+      this.speechAnalyser = this.audioCtx.createAnalyser();
+      this.speechAnalyser.fftSize = 2048;
+      this.speechAnalyser.smoothingTimeConstant = 0.45;
+      this.source.connect(this.speechAnalyser);
+      this._levelEma = null;
+      this._timeData = null;
 
       const bufferLength = this.analyser.frequencyBinCount;
       this.dataArray = new Uint8Array(bufferLength);
@@ -110,6 +117,28 @@ class AudioVisualizer {
       this.ctx.roundRect(x, y, barWidth, barHeight, 2);
       this.ctx.fill();
     }
+  }
+
+  /**
+   * 録音ストリームの短時間 RMS（0–1）。認識用マイクとは別グラフ。
+   * 未接続のときは null。
+   * @returns {number|null}
+   */
+  getSpeechLevel() {
+    const analyser = this.speechAnalyser;
+    if (!analyser) return null;
+    if (!this._timeData || this._timeData.length !== analyser.fftSize) {
+      this._timeData = new Uint8Array(analyser.fftSize);
+    }
+    analyser.getByteTimeDomainData(this._timeData);
+    let sum = 0;
+    for (let i = 0; i < this._timeData.length; i++) {
+      const v = (this._timeData[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / this._timeData.length);
+    this._levelEma = this._levelEma == null ? rms : this._levelEma * 0.55 + rms * 0.45;
+    return this._levelEma;
   }
 
   /**
@@ -177,6 +206,10 @@ class AudioVisualizer {
       }
       this.source = null;
     }
+    this.analyser = null;
+    this.speechAnalyser = null;
+    this._timeData = null;
+    this._levelEma = null;
 
     if (this.audioCtx && this.audioCtx.state !== 'closed') {
       try {
