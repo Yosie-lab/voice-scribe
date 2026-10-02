@@ -34,8 +34,6 @@ class VoiceScribeApp {
     this._speechProfile = null;
     this._speechFloor = 0.012;
     this._speechHotMs = 0;
-    this._stallFloor = 0.012;
-    this._stallHotMs = 0;
 
     window.app = this;
   }
@@ -473,9 +471,7 @@ class VoiceScribeApp {
       this.transcriber.startBeforeRecorder
     );
     this._speechFloor = this._speechProfile.floor;
-    this._stallFloor = this._speechProfile.stallFloor ?? this._speechProfile.floor;
     this._speechHotMs = 0;
-    this._stallHotMs = 0;
     this._speechWatch = setInterval(() => this._pollSpeechLevel(), 200);
   }
 
@@ -488,7 +484,6 @@ class VoiceScribeApp {
       this._speechWatch = null;
     }
     this._speechHotMs = 0;
-    this._stallHotMs = 0;
   }
 
   /**
@@ -497,55 +492,32 @@ class VoiceScribeApp {
   _pollSpeechLevel() {
     if (!this.isRecording || this._userPaused || document.visibilityState === 'hidden') {
       this._speechHotMs = 0;
-      this._stallHotMs = 0;
       return;
     }
     if (!this.visualizer || typeof this.visualizer.getSpeechLevel !== 'function') return;
+    const level = this.visualizer.getSpeechLevel();
+    if (level == null || Number.isNaN(level)) return;
 
     const profile = this._speechProfile || Transcriber.speechWatchProfile('en-US', false);
-    const ema = this.visualizer.getSpeechLevel();
-    let peak = null;
-    if (profile.usePeak && typeof this.visualizer.getSpeechPeak === 'function') {
-      const sampled = this.visualizer.getSpeechPeak();
-      if (typeof sampled === 'number' && !Number.isNaN(sampled)) peak = sampled;
-    }
-    if ((ema == null || Number.isNaN(ema)) && peak == null) return;
-
-    const flags = Transcriber.speechHotFlags(profile, ema, peak, this._speechFloor, this._stallFloor);
-    if (!flags.gap) {
-      const quiet = typeof ema === 'number' && !Number.isNaN(ema) ? ema : peak;
-      this._speechFloor = this._speechFloor * 0.96 + quiet * 0.04;
+    const speaking = Transcriber.isSpeechHot(level, this._speechFloor, profile);
+    if (!speaking) {
+      this._speechFloor = this._speechFloor * 0.96 + level * 0.04;
       this._speechHotMs = 0;
-    } else {
-      this._speechHotMs += 200;
-    }
-
-    if (profile.stallAbs == null) {
-      this._stallHotMs = this._speechHotMs;
-    } else if (!flags.stall) {
-      if (typeof ema === 'number' && !Number.isNaN(ema)) {
-        this._stallFloor = this._stallFloor * 0.96 + ema * 0.04;
-      }
-      this._stallHotMs = 0;
-    } else {
-      this._stallHotMs += 200;
-    }
-
-    if (this._speechHotMs < profile.gapMs && this._stallHotMs < profile.stallMs) return;
-
-    if (!this.transcriber.isEngineRunning()) {
-      if (this._speechHotMs < profile.gapMs) return;
-      this.transcriber.nudge('gap');
-      this._speechHotMs = 0;
-      this._stallHotMs = 0;
       return;
     }
-    // 英語だけ、結果も speechstart も無い長い発話で abort して付け直す。
-    // desktop ja は仮説のあと結果が止まったときだけ stop() する。2.5 秒では切らない。
-    if (this._stallHotMs >= profile.stallMs && this.transcriber.msSinceResult() >= profile.resultMs) {
+
+    this._speechHotMs += 200;
+    if (this._speechHotMs < profile.gapMs) return;
+
+    if (!this.transcriber.isEngineRunning()) {
+      this.transcriber.nudge('gap');
+      this._speechHotMs = 0;
+      return;
+    }
+    // 暫定が流れているあいだは nudge 側が切らない。結果も speechstart も無いときだけ付け直す。
+    if (this._speechHotMs >= profile.stallMs && this.transcriber.msSinceResult() >= profile.resultMs) {
       this.transcriber.nudge('stall');
       this._speechHotMs = 0;
-      this._stallHotMs = 0;
     }
   }
 

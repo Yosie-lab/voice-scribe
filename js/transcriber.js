@@ -2,18 +2,8 @@
  * VoiceScribe — 音声認識（文字起こし）モジュール
  * Web Speech API (webkitSpeechRecognition) を利用したリアルタイム音声文字起こし。
  * 認識品質の上限は OS / ブラウザ側。認識器自身のマイクは増幅できない。
- * ここでは取りこぼし（無音扱い、再起動の隙間、尻切れ、フィラー削除、短い暫定の破棄）を減らす。
- * desktop の ja-JP は、モーラの尻と、死んだ認識の再起動だけを英語より敏感にする。
- * 動いている ja-JP は abort しない。Chrome の日本語仮説は英語より遅く、
- * abort はアップロード済みの音声を捨てる。v60 は部屋ノイズの stall だけ外したが、
- * 本発話の stall（2.5 秒）と speechend 後 900ms の abort は残っていた。
- * v61 は abort を止めた代わりに desktop ja を continuous:false にした。
- * 単発認識は仮説を発話終了（または無応答の stop）まで溜めるので、話しているあいだ字幕が動かない。
- * desktop ja は英語と同じ continuous:true。iOS は false のまま。abort は戻さない。
- * v62 は最初の仮説のあと回復を止めた。Chrome の ja-JP は短い暫定のあと speechend し、
- * セッションは動いたまま次の音声を上げない。仮説があるので 8 秒の stop も stall も走らず、
- * 字幕は最初の数文字で止まる。仮説のあと jaStaleStopMs 結果が無いときだけ stop() する。
- * 900ms の abort と、仮説が無い 2.5 秒の切断は戻さない。
+ * ここでは取りこぼし（無音扱い、再起動の隙間、尻切れ）を減らす。
+ * desktop の ja-JP は、モーラの尻・小声のレベル・再起動だけを英語より敏感にする。
  */
 
 class Transcriber {
@@ -41,15 +31,9 @@ class Transcriber {
     this._lastNudgeAt = 0;
     this._intentionalAbort = false;
     this._restartNotBefore = 0;
-    this._sessionStartedAt = 0;
-    this._speechEndedAt = 0;
-    this._gotHypothesis = false;
-    this._jaFastRestart = false;
-    this._jaUnwedgeSent = false;
     this._isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     this._jaHungTimer = null;
-    this._jaSpeechEndTimer = null;
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
@@ -88,7 +72,6 @@ class Transcriber {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
     this._clearJaHungWatch();
-    this._clearJaSpeechEndFlush();
 
     // 既存インスタンスはハンドラを外してから破棄する（abort の onend で再起動が二重にならない）
     if (this.recognition) {
@@ -109,9 +92,7 @@ class Transcriber {
 
     this.recognition = new SpeechRecognition();
     // iOS は continuous:true だと確定せずすぐ終わる。false にして onend で作り直す。
-    // desktop ja も false にすると Chrome は単発になり、仮説が発話の終わりまで出ない。
-    // 空字幕の原因は continuous ではなく、speechend / stall の abort。abort はしない。
-    this.recognition.continuous = Transcriber.useContinuous(this.language, this._isIOS);
+    this.recognition.continuous = !this._isIOS;
     this.recognition.interimResults = true;
     this.recognition.lang = this.language;
     // 日本語は上位が尻切れでも、うしろの候補にモーラが残ることがある。
@@ -119,15 +100,8 @@ class Transcriber {
 
     this.recognition.onstart = () => {
       this._engineRunning = true;
-      this._sessionStartedAt = Date.now();
       this._heardSpeechAt = 0;
-      this._speechEndedAt = 0;
-      this._gotHypothesis = false;
-      this._jaFastRestart = false;
-      this._jaUnwedgeSent = false;
       this._resumeWhenVisible = false;
-      this._clearJaSpeechEndFlush();
-      this._armJaLiveWatch();
     };
 
     // クラウド結果より先に「音は拾った」が来る。この直後に暫定が無いなら、無視されていないか見る。
@@ -135,15 +109,14 @@ class Transcriber {
       this._heardSpeechAt = Date.now();
     };
 
-    // 仮説が speechend より後に届く。ここで abort しない。
-    // 結果が jaStaleStopMs 来なければ stop() して付け直す。900ms では切らない。
+    // 日本語の continuous は speechend のあと暫定のまま固まることがある。確定を待ってから付け直す。
     this.recognition.onspeechend = () => {
-      this._speechEndedAt = Date.now();
-      this._armJaSpeechEndFlush();
+      this._armJaHungWatch();
     };
 
     // 結果受信ハンドラ
     this.recognition.onresult = (event) => {
+      this._clearJaHungWatch();
       this.retryCount = 0;
       this._contentionRestarts = 0;
       this._captureErrorNotified = false;
@@ -162,59 +135,11 @@ class Transcriber {
         }
       }
 
-      const previousInterim = this.interimTranscript;
-      const superseded = Transcriber.keepSupersededInterim(
-        this.language,
-        previousInterim,
-        currentFinal,
-        currentInterim
-      );
-      if (superseded) {
-        const beforeSuper = this.finalTranscript;
-        this._appendFinal(superseded);
-        if (this.finalTranscript !== beforeSuper) this._lastFromInterim = true;
-      }
-      const before = this.finalTranscript;
-      if ((currentFinal || '').trim()) this._appendFinal(currentFinal);
-      if (this.finalTranscript === before) {
-        const salvaged = Transcriber.salvageWipedInterim(
-          this.language,
-          previousInterim,
-          '',
-          currentInterim
-        );
-        if (salvaged) {
-          this._appendFinal(salvaged);
-          if (this.finalTranscript !== before) this._lastFromInterim = true;
-        }
-      }
+      if (currentFinal) this._appendFinal(currentFinal);
       this.interimTranscript = currentInterim;
-      if (this._speechEndedAt && this._lastResultAt >= this._speechEndedAt) {
-        this._clearJaSpeechEndFlush();
-      }
 
       if (this.onResult) {
         this.onResult(this.finalTranscript, this.interimTranscript);
-      }
-
-      if ((this.finalTranscript || this.interimTranscript || '').trim()) {
-        this._gotHypothesis = true;
-        this._clearJaHungWatch();
-      } else if (this._engineRunning) {
-        this._armJaLiveWatch();
-      }
-
-      // onend が先で、仮説が遅れて届いた。待っていた再起動を短くする。
-      if (
-        this._gotHypothesis &&
-        this.language === 'ja-JP' &&
-        !this._isIOS &&
-        !this._engineRunning &&
-        this.shouldRestart &&
-        this.isListening
-      ) {
-        this._clearRestartTimer();
-        this._scheduleRestart(Transcriber.restartDelay('end', this._isIOS, this.language));
       }
     };
 
@@ -229,7 +154,7 @@ class Transcriber {
         this._engineRunning = false;
         if (this._deferWhileHidden()) return;
         if (this.shouldRestart && this.isListening) {
-          this._scheduleRestart(this._restartDelayFor('no-speech'));
+          this._scheduleRestart(Transcriber.restartDelay('no-speech', this._isIOS, this.language));
         }
         return;
       }
@@ -254,10 +179,7 @@ class Transcriber {
               return;
             }
           }
-          const jaWaiting = this.language === 'ja-JP' && !this._isIOS && !this._gotHypothesis
-            && (intentional || this._speechEndedAt > 0);
-          if (!jaWaiting) this._jaFastRestart = false;
-          this._scheduleRestart(jaWaiting ? this._restartDelayFor('end') : (intentional ? 40 : 300));
+          this._scheduleRestart(intentional ? 40 : 300);
         }
         return;
       }
@@ -301,17 +223,13 @@ class Transcriber {
     // 確定前の暫定はここで残す。再起動の隙間で早口の続きが消えるのを防ぐ。
     this.recognition.onend = () => {
       this._engineRunning = false;
-      this._intentionalAbort = false;
-      this._jaUnwedgeSent = false;
-      this._clearJaHungWatch();
-      this._clearJaSpeechEndFlush();
       this._commitPendingInterim();
       if (this._hold || document.visibilityState === 'hidden') {
         if (this.shouldRestart && this.isListening) this._resumeWhenVisible = true;
         return;
       }
       if (this.shouldRestart && this.isListening) {
-        this._scheduleRestart(this._restartDelayFor('end'));
+        this._scheduleRestart();
       } else {
         this.isListening = false;
         if (this.onEnd) this.onEnd();
@@ -363,11 +281,6 @@ class Transcriber {
     this._lastNudgeAt = 0;
     this._intentionalAbort = false;
     this._restartNotBefore = 0;
-    this._sessionStartedAt = 0;
-    this._speechEndedAt = 0;
-    this._gotHypothesis = false;
-    this._jaFastRestart = false;
-    this._jaUnwedgeSent = false;
     this.retryCount = 0;
     this._contentionRestarts = 0;
     this._clearRestartTimer();
@@ -403,11 +316,8 @@ class Transcriber {
     this._hold = false;
     this._resumeWhenVisible = false;
     this._intentionalAbort = false;
-    this._jaFastRestart = false;
-    this._jaUnwedgeSent = false;
     this._clearRestartTimer();
     this._clearJaHungWatch();
-    this._clearJaSpeechEndFlush();
     this._commitPendingInterim();
 
     if (this.recognition) {
@@ -524,8 +434,6 @@ class Transcriber {
     if (this._lastNudgeAt && now - this._lastNudgeAt < 3000) return false;
 
     if (!this._engineRunning) {
-      // 予定済みの ja 再起動はピークで潰さない。init() が遅い onresult を外す。
-      if (this.language === 'ja-JP' && !this._isIOS && this._restartTimer) return false;
       this._lastNudgeAt = now;
       this._clearRestartTimer();
       this._restartNow();
@@ -533,22 +441,6 @@ class Transcriber {
     }
 
     if (reason !== 'stall') return false;
-    // 仮説が無い desktop ja は切らない。2.5 秒の abort は音声を捨てる。
-    // 仮説のあと結果が止まったときだけ stop() する。英語はこれまで通り abort。
-    if (this.language === 'ja-JP' && !this._isIOS) {
-      const sinceSpeechEnd = this._speechEndedAt ? now - this._speechEndedAt : 0;
-      const action = Transcriber.jaStaleRecovery({
-        language: this.language,
-        ios: this._isIOS,
-        gotResult: !!this._gotHypothesis,
-        msSinceResult: this.msSinceResult(),
-        msSinceSpeechEnd: sinceSpeechEnd,
-        resultAfterSpeechEnd: !!(this._speechEndedAt && this._lastResultAt >= this._speechEndedAt)
-      });
-      if (action !== 'stop') return false;
-      this._lastNudgeAt = now;
-      return this._unwedgeJaSession();
-    }
     if ((this.interimTranscript || '').trim()) return false;
     const stallMs = Transcriber.speechWatchProfile(this.language, this._isIOS).resultMs;
     if (this._heardSpeechAt && now - this._heardSpeechAt < stallMs) return false;
@@ -613,8 +505,6 @@ class Transcriber {
       this._engineRunning = true;
       this._resumeWhenVisible = false;
       this._heardSpeechAt = 0;
-      this._speechEndedAt = 0;
-      this._gotHypothesis = false;
       this._lastResultAt = Date.now();
       this.retryCount = 0;
     } catch (error) {
@@ -656,55 +546,35 @@ class Transcriber {
   }
 
   /**
-   * 仮説がまだ無い desktop ja だけ、長い無応答のあと stop() する。
-   * abort() は結果を返さない。stop() はここまでの音声で結果を求める。
+   * 日本語 desktop で、speechend 後も暫定が確定しないときだけ付け直す。
+   * 暫定が無いあいだは切らない（連続認識の待ち時間を潰さない）。iOS は onend に任せる。
    * @private
    */
-  _armJaLiveWatch() {
+  _armJaHungWatch() {
     this._clearJaHungWatch();
-    if (!Transcriber.useJaLiveWatch(this.language, this._isIOS)) return;
+    if (this.language !== 'ja-JP' || this._isIOS) return;
     if (!this.shouldRestart || !this.isListening || !this._engineRunning) return;
-    const startedAt = this._sessionStartedAt || Date.now();
-    this._sessionStartedAt = startedAt;
     this._jaHungTimer = setTimeout(() => {
       this._jaHungTimer = null;
       if (!this.shouldRestart || !this.isListening || !this._engineRunning) return;
-      const action = Transcriber.jaLiveRecovery({
+      const pending = (this.interimTranscript || '').trim();
+      if (!Transcriber.shouldRecoverHungRecognition({
         language: this.language,
         ios: this._isIOS,
-        hasInterim: !!(this.interimTranscript || '').trim(),
-        gotResult: !!this._gotHypothesis,
-        msSinceStart: Date.now() - startedAt
-      });
-      if (action !== 'stop') return;
+        msSinceResult: this.msSinceResult(),
+        hasInterim: !!pending
+      })) return;
+      this._commitPendingInterim();
       this._intentionalAbort = true;
+      this._engineRunning = false;
+      this._clearRestartTimer();
+      this._scheduleRestart(Transcriber.restartDelay('end', this._isIOS, this.language));
       try {
-        if (this.recognition) this.recognition.stop();
+        if (this.recognition) this.recognition.abort();
       } catch {
         this._intentionalAbort = false;
       }
-    }, Transcriber.jaLiveStopMs);
-  }
-
-  /**
-   * speechend のあと仮説がまだ無いときだけ、再起動を遅らせる。
-   * それ以外は英語と同じ待ち。ja を英語より短くすると onresult の前に init() する。
-   * @param {'no-speech'|'stall'|'end'} kind
-   * @returns {number}
-   * @private
-   */
-  _restartDelayFor(kind) {
-    if (this._jaFastRestart) {
-      this._jaFastRestart = false;
-      return Transcriber.restartDelay(kind, this._isIOS, this.language);
-    }
-    return Transcriber.endRestartDelay(
-      this._isIOS,
-      this.language,
-      kind,
-      this._lastResultAt,
-      this._speechEndedAt
-    );
+    }, Transcriber.jaHungWatchMs);
   }
 
   /**
@@ -718,91 +588,21 @@ class Transcriber {
   }
 
   /**
-   * speechend のあと、仮説より新しい結果が無い desktop ja を stop() する。
-   * 仮説がまだ無いセッションは 8 秒側に任せ、ここでは切らない。
-   * @private
-   */
-  _armJaSpeechEndFlush() {
-    this._clearJaSpeechEndFlush();
-    if (!Transcriber.useJaLiveWatch(this.language, this._isIOS)) return;
-    if (!this.shouldRestart || !this.isListening || !this._engineRunning) return;
-    const endedAt = this._speechEndedAt;
-    if (!endedAt) return;
-    this._jaSpeechEndTimer = setTimeout(() => {
-      this._jaSpeechEndTimer = null;
-      if (!this.shouldRestart || !this.isListening || !this._engineRunning) return;
-      const action = Transcriber.jaStaleRecovery({
-        language: this.language,
-        ios: this._isIOS,
-        gotResult: !!this._gotHypothesis,
-        msSinceResult: this.msSinceResult(),
-        msSinceSpeechEnd: Date.now() - endedAt,
-        resultAfterSpeechEnd: this._lastResultAt >= endedAt
-      });
-      if (action !== 'stop') return;
-      this._unwedgeJaSession();
-    }, Transcriber.jaStaleStopMs);
-  }
-
-  /**
-   * @private
-   */
-  _clearJaSpeechEndFlush() {
-    if (this._jaSpeechEndTimer) {
-      clearTimeout(this._jaSpeechEndTimer);
-      this._jaSpeechEndTimer = null;
-    }
-  }
-
-  /**
-   * 黙った desktop ja に、ここまでの音声の結果を求め、すぐ付け直す。
-   * abort() は使わない。仮説が無いセッションからは呼ばない。
-   * @returns {boolean}
-   * @private
-   */
-  _unwedgeJaSession() {
-    if (this._jaUnwedgeSent) return false;
-    if (!this.shouldRestart || !this.isListening || !this._engineRunning) return false;
-    if (this._isIOS || this.language !== 'ja-JP' || !this._gotHypothesis) return false;
-    this._jaUnwedgeSent = true;
-    this._jaFastRestart = true;
-    this._intentionalAbort = true;
-    this._clearJaSpeechEndFlush();
-    this._commitPendingInterim();
-    try {
-      if (this.recognition) this.recognition.stop();
-    } catch {
-      this._jaFastRestart = false;
-      this._intentionalAbort = false;
-      this._jaUnwedgeSent = false;
-      return false;
-    }
-    return true;
-  }
-
-  /**
    * desktop ja-JP のレベル監視。英語と iOS は v57 と同じしきい値。
-   * ja の低いしきい値とピークは、死んだ認識の gap だけに使う。
-   * 動いている ja はレベルでは abort しない。仮説のあと黙ったら stop() だけ。
    * @param {string} language
    * @param {boolean} ios
-   * @returns {{floor: number, abs: number, mult: number, gapMs: number, stallMs: number, resultMs: number, usePeak?: boolean, stallFloor?: number, stallAbs?: number, stallMult?: number}}
+   * @returns {{floor: number, abs: number, mult: number, gapMs: number, stallMs: number, resultMs: number}}
    */
   static speechWatchProfile(language, ios) {
     if (language === 'ja-JP' && !ios) {
-      // gap の初期しきい値は max(0.007, 0.004*2) = 0.008。死んだ認識を 1 回のピークで付け直す。
-      // stall は max(0.018, 0.012*3.2)。部屋ノイズのピークでは切らない。
+      // 初期しきい値は max(0.007, 0.004*2) = 0.008。0.01 前後の小声を拾い、0.008 以下の部屋ノイズは拾わない。
       return {
         floor: 0.004,
         abs: 0.007,
         mult: 2,
-        gapMs: 200,
-        stallMs: 2000,
-        resultMs: 2500,
-        usePeak: true,
-        stallFloor: 0.012,
-        stallAbs: 0.018,
-        stallMult: 3.2
+        gapMs: 400,
+        stallMs: 1400,
+        resultMs: 1600
       };
     }
     return {
@@ -826,141 +626,36 @@ class Transcriber {
   }
 
   /**
-   * ピークは死んだ認識の再起動だけに使う。動いている認識を切る判定は EMA と stall しきい値。
-   * stallAbs が無いプロファイル（英語・iOS）は gap と同じレベルを stall にも使う。
-   * @param {{abs: number, mult: number, usePeak?: boolean, stallAbs?: number, stallMult?: number}} profile
-   * @param {number|null} ema
-   * @param {number|null} peak
-   * @param {number} gapFloor
-   * @param {number} stallFloor
-   * @returns {{gap: boolean, stall: boolean}}
-   */
-  static speechHotFlags(profile, ema, peak, gapFloor, stallFloor) {
-    const usePeak = !!(profile && profile.usePeak && typeof peak === 'number' && !Number.isNaN(peak));
-    const gapLevel = usePeak ? peak : ema;
-    const gap = typeof gapLevel === 'number' && !Number.isNaN(gapLevel)
-      && Transcriber.isSpeechHot(gapLevel, gapFloor, profile);
-    const separateStall = !!(profile && profile.stallAbs != null);
-    const stallSpec = separateStall
-      ? { abs: profile.stallAbs, mult: profile.stallMult }
-      : profile;
-    const stallBase = separateStall ? stallFloor : gapFloor;
-    const stall = typeof ema === 'number' && !Number.isNaN(ema)
-      && Transcriber.isSpeechHot(ema, stallBase, stallSpec);
-    return { gap: !!gap, stall: !!stall };
-  }
-
-  /**
-   * 再起動までの待ち。desktop は言語で変えない。ja だけ短くすると仮説より先に init() する。
-   * iOS は v57 のまま。
+   * 再起動までの待ち。desktop 日本語だけ隙間を詰める。iOS / 英語は v57 のまま。
    * @param {'no-speech'|'stall'|'end'} kind
    * @param {boolean} isIOS
-   * @param {string} [_language] 呼び出し互換。desktop の待ちは言語で変えない。
+   * @param {string} language
    * @returns {number}
    */
-  static restartDelay(kind, isIOS, _language) {
+  static restartDelay(kind, isIOS, language) {
+    const jaDesktop = language === 'ja-JP' && !isIOS;
     if (isIOS) {
       if (kind === 'no-speech' || kind === 'stall') return 70;
       return 90;
     }
-    if (kind === 'no-speech') return 25;
-    if (kind === 'stall') return 30;
-    return 35;
+    if (kind === 'no-speech') return jaDesktop ? 15 : 25;
+    if (kind === 'stall') return jaDesktop ? 20 : 30;
+    return jaDesktop ? 20 : 35;
   }
 
   /**
-   * speechend 後に仮説が無い ja desktop の再起動待ち。これより短いと onresult を落とす。
+   * speechend 後、暫定がこのミリ秒動かなければ日本語 desktop だけ付け直す。
    */
-  static jaResultGraceMs = 3000;
+  static jaHungWatchMs = 900;
 
   /**
-   * 仮説が一度出た desktop ja が、その後結果を足さないとき stop() するまでの待ち。
-   * jaResultGraceMs より長く、2.5 秒の stall abort と speechend 900ms の abort より遅い。
-   */
-  static jaStaleStopMs = 4500;
-
-  /**
-   * ライブ ja セッションを止めて結果を求めるまでの待ち。2.5 秒の abort は仮説より短い。
-   */
-  static jaLiveStopMs = 8000;
-
-  /**
-   * iOS だけ発話ごとに終わらせて onend で付け直す。
-   * desktop は ja も en も continuous。ja だけ false にすると単発認識になり、
-   * 暫定が話しているあいだ来ない（確定は発話終了か、仮説が無いときの stop で届く）。
-   * @param {string} _language 呼び出し互換。desktop の continuous は言語で分けない。
-   * @param {boolean} ios
-   * @returns {boolean}
-   */
-  static useContinuous(_language, ios) {
-    return !ios;
-  }
-
-  /**
-   * @param {string} language
-   * @param {boolean} ios
-   * @returns {boolean}
-   */
-  static useJaLiveWatch(language, ios) {
-    return language === 'ja-JP' && !ios;
-  }
-
-  /**
-   * desktop ja のライブセッションは abort しない。無応答が長いときだけ stop。
-   * @param {{language: string, ios: boolean, hasInterim: boolean, gotResult: boolean, msSinceStart: number}} state
-   * @returns {'none'|'stop'}
-   */
-  static jaLiveRecovery(state) {
-    if (!state || state.language !== 'ja-JP' || state.ios) return 'none';
-    if (state.hasInterim || state.gotResult) return 'none';
-    if (state.msSinceStart >= Transcriber.jaLiveStopMs) return 'stop';
-    return 'none';
-  }
-
-  /**
-   * 最初の仮説のあとに黙った desktop ja。stop は結果を求め、abort はしない。
-   * 仮説が無いあいだは none（8 秒の jaLiveRecovery が持つ）。
-   * 900ms / 2.5 秒では none。
-   * @param {{language: string, ios: boolean, gotResult: boolean, msSinceResult: number, msSinceSpeechEnd: number, resultAfterSpeechEnd: boolean}} state
-   * @returns {'none'|'stop'}
-   */
-  static jaStaleRecovery(state) {
-    if (!state || state.language !== 'ja-JP' || state.ios) return 'none';
-    if (!state.gotResult) return 'none';
-    const speechEndHung = state.msSinceSpeechEnd >= Transcriber.jaStaleStopMs
-      && !state.resultAfterSpeechEnd;
-    const stale = state.msSinceResult >= Transcriber.jaStaleStopMs;
-    if (speechEndHung || stale) return 'stop';
-    return 'none';
-  }
-
-  /**
-   * speechend 後、仮説がまだ無い ja desktop だけ再起動を遅らせる。
-   * @param {boolean} isIOS
-   * @param {string} language
-   * @param {'no-speech'|'stall'|'end'} kind
-   * @param {number} lastResultAt
-   * @param {number} speechEndedAt
-   * @returns {number}
-   */
-  static endRestartDelay(isIOS, language, kind, lastResultAt, speechEndedAt) {
-    const waiting = language === 'ja-JP'
-      && !isIOS
-      && (kind === 'end' || kind === 'no-speech')
-      && speechEndedAt > 0
-      && !(lastResultAt >= speechEndedAt);
-    if (waiting) return Transcriber.jaResultGraceMs;
-    return Transcriber.restartDelay(kind, isIOS, language);
-  }
-
-  /**
-   * v60 は speechend の 900ms 後に abort していた。仮説が落ちるので、もう付け直さない。
    * @param {{language: string, ios: boolean, msSinceResult: number, hasInterim: boolean}} state
    * @returns {boolean}
    */
   static shouldRecoverHungRecognition(state) {
-    void state;
-    return false;
+    if (!state || state.language !== 'ja-JP' || state.ios) return false;
+    if (!state.hasInterim) return false;
+    return state.msSinceResult >= Transcriber.jaHungWatchMs;
   }
 
   /**
@@ -1139,53 +834,11 @@ class Transcriber {
     for (let len = max; len >= 4; len--) {
       if (a.slice(-len) === b.slice(0, len)) return a.slice(0, -len) + b;
     }
-    // 全文が「えー」「えっと」だけのとき、次が同じ頭なら繰り返さず伸ばす。1文字は「あ」+「明日」になるので足さない。
-    if (a.length >= 2 && a.length < 4 && b.startsWith(a)) return b;
     return '';
   }
 
   /**
-   * 日本語の暫定が確定にならず空になったとき、その暫定を残す。
-   * 認識器が返していない語は作らない。1文字の途中結果と、英語の暫定は残さない。
-   * @param {string} language
-   * @param {string} previousInterim
-   * @param {string} currentFinal
-   * @param {string} currentInterim
-   * @returns {string}
-   */
-  static salvageWipedInterim(language, previousInterim, currentFinal, currentInterim) {
-    if (language !== 'ja-JP') return '';
-    if ((currentFinal || '').trim()) return '';
-    if ((currentInterim || '').trim()) return '';
-    const pending = (previousInterim || '').trim();
-    if (pending.length < 2) return '';
-    return pending;
-  }
-
-  /**
-   * 日本語の暫定が、別発話の結果に置き換わって isFinal にならなかったとき、前の暫定を残す。
-   * 伸び・縮み（どちらかがもう片方の先頭）は同じ仮説なので残さない。空への置き換えは salvage に任せる。
-   * @param {string} language
-   * @param {string} previousInterim
-   * @param {string} currentFinal
-   * @param {string} currentInterim
-   * @returns {string}
-   */
-  static keepSupersededInterim(language, previousInterim, currentFinal, currentInterim) {
-    if (language !== 'ja-JP') return '';
-    const pending = (previousInterim || '').trim();
-    if (pending.length < 2) return '';
-    const next = `${currentFinal || ''}${currentInterim || ''}`.trim();
-    if (!next) return '';
-    const foldPending = Transcriber._foldJaDigits(pending);
-    const foldNext = Transcriber._foldJaDigits(next);
-    if (!foldPending || !foldNext) return '';
-    if (foldNext.startsWith(foldPending) || foldPending.startsWith(foldNext)) return '';
-    return pending;
-  }
-
-  /**
-   * 英語の um / uh だけ外す。日本語のえー / えっと / あのーは残す。
+   * 独立したフィラーだけ外す。あの / まあ / like など実語は残す。
    * @param {string} text
    * @param {string} language
    * @returns {string}
@@ -1193,8 +846,11 @@ class Transcriber {
   static stripFillers(text, language) {
     if (!text) return '';
     if (language === 'ja-JP') {
-      // えー / えっと / あのー は字幕に残す。空白だけ整える。英語の um / uh はこれまで通り外す。
+      // えーと系は語彙になりにくいので落とす。あのー / そのー は実語なので長音だけ外す。
       return text
+        .replace(/えー+っと|えーっと|えーと|えっと/g, '')
+        .replace(/あのー+|あの〜+/g, 'あの')
+        .replace(/そのー+|その〜+/g, 'その')
         .replace(/^[、,\s]+/, '')
         .replace(/[ \t\u3000]{2,}/g, ' ');
     }
@@ -1226,15 +882,12 @@ class Transcriber {
       }
     }
 
-    const lastNorm = this._normalize(last);
-    const nextNorm = this._normalize(next);
-    const shortJa = this.language === 'ja-JP' && lastNorm.length >= 2 && lastNorm.length <= 8;
     if (
+      this._lastFromInterim &&
       last &&
       now - this._lastChunkAt < mergeMs &&
-      (this._lastFromInterim || shortJa) &&
-      nextNorm.startsWith(lastNorm) &&
-      nextNorm.length > lastNorm.length
+      this._normalize(next).startsWith(this._normalize(last)) &&
+      this._normalize(next).length > this._normalize(last).length
     ) {
       const current = this.finalTranscript || '';
       const base = current.slice(0, Math.max(0, current.length - last.length));
