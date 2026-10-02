@@ -495,13 +495,19 @@ class VoiceScribeApp {
       return;
     }
     if (!this.visualizer || typeof this.visualizer.getSpeechLevel !== 'function') return;
-    const level = this.visualizer.getSpeechLevel();
-    if (level == null || Number.isNaN(level)) return;
 
     const profile = this._speechProfile || Transcriber.speechWatchProfile('en-US', false);
+    const ema = this.visualizer.getSpeechLevel();
+    let level = ema;
+    if (profile.usePeak && typeof this.visualizer.getSpeechPeak === 'function') {
+      const peak = this.visualizer.getSpeechPeak();
+      if (typeof peak === 'number' && !Number.isNaN(peak)) level = peak;
+    }
+    if (level == null || Number.isNaN(level)) return;
     const speaking = Transcriber.isSpeechHot(level, this._speechFloor, profile);
     if (!speaking) {
-      this._speechFloor = this._speechFloor * 0.96 + level * 0.04;
+      const quiet = typeof ema === 'number' && !Number.isNaN(ema) ? ema : level;
+      this._speechFloor = this._speechFloor * 0.96 + quiet * 0.04;
       this._speechHotMs = 0;
       return;
     }

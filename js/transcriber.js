@@ -2,8 +2,8 @@
  * VoiceScribe — 音声認識（文字起こし）モジュール
  * Web Speech API (webkitSpeechRecognition) を利用したリアルタイム音声文字起こし。
  * 認識品質の上限は OS / ブラウザ側。認識器自身のマイクは増幅できない。
- * ここでは取りこぼし（無音扱い、再起動の隙間、尻切れ）を減らす。
- * desktop の ja-JP は、モーラの尻・小声のレベル・再起動だけを英語より敏感にする。
+ * ここでは取りこぼし（無音扱い、再起動の隙間、尻切れ、フィラー削除、短い暫定の破棄）を減らす。
+ * desktop の ja-JP は、モーラの尻・短いバーストのレベル・再起動だけを英語より敏感にする。
  */
 
 class Transcriber {
@@ -135,7 +135,21 @@ class Transcriber {
         }
       }
 
-      if (currentFinal) this._appendFinal(currentFinal);
+      const previousInterim = this.interimTranscript;
+      const before = this.finalTranscript;
+      if ((currentFinal || '').trim()) this._appendFinal(currentFinal);
+      if (this.finalTranscript === before) {
+        const salvaged = Transcriber.salvageWipedInterim(
+          this.language,
+          previousInterim,
+          '',
+          currentInterim
+        );
+        if (salvaged) {
+          this._appendFinal(salvaged);
+          if (this.finalTranscript !== before) this._lastFromInterim = true;
+        }
+      }
       this.interimTranscript = currentInterim;
 
       if (this.onResult) {
@@ -596,13 +610,16 @@ class Transcriber {
   static speechWatchProfile(language, ios) {
     if (language === 'ja-JP' && !ios) {
       // 初期しきい値は max(0.007, 0.004*2) = 0.008。0.01 前後の小声を拾い、0.008 以下の部屋ノイズは拾わない。
+      // gapMs は死んだ認識を付け直すまでの有音時間。短いフィラーは 400ms 続かないので 1 回のピークで足りる。
+      // 動いている認識を切る stall は v58 のまま（途中で切ると隙間が増える）。
       return {
         floor: 0.004,
         abs: 0.007,
         mult: 2,
-        gapMs: 400,
+        gapMs: 200,
         stallMs: 1400,
-        resultMs: 1600
+        resultMs: 1600,
+        usePeak: true
       };
     }
     return {
@@ -834,11 +851,31 @@ class Transcriber {
     for (let len = max; len >= 4; len--) {
       if (a.slice(-len) === b.slice(0, len)) return a.slice(0, -len) + b;
     }
+    // 全文が「えー」「えっと」だけのとき、次が同じ頭なら繰り返さず伸ばす。1文字は「あ」+「明日」になるので足さない。
+    if (a.length >= 2 && a.length < 4 && b.startsWith(a)) return b;
     return '';
   }
 
   /**
-   * 独立したフィラーだけ外す。あの / まあ / like など実語は残す。
+   * 日本語の暫定が確定にならず空になったとき、その暫定を残す。
+   * 認識器が返していない語は作らない。1文字の途中結果と、英語の暫定は残さない。
+   * @param {string} language
+   * @param {string} previousInterim
+   * @param {string} currentFinal
+   * @param {string} currentInterim
+   * @returns {string}
+   */
+  static salvageWipedInterim(language, previousInterim, currentFinal, currentInterim) {
+    if (language !== 'ja-JP') return '';
+    if ((currentFinal || '').trim()) return '';
+    if ((currentInterim || '').trim()) return '';
+    const pending = (previousInterim || '').trim();
+    if (pending.length < 2) return '';
+    return pending;
+  }
+
+  /**
+   * 英語の um / uh だけ外す。日本語のえー / えっと / あのーは残す。
    * @param {string} text
    * @param {string} language
    * @returns {string}
@@ -846,11 +883,8 @@ class Transcriber {
   static stripFillers(text, language) {
     if (!text) return '';
     if (language === 'ja-JP') {
-      // えーと系は語彙になりにくいので落とす。あのー / そのー は実語なので長音だけ外す。
+      // えー / えっと / あのー は字幕に残す。空白だけ整える。英語の um / uh はこれまで通り外す。
       return text
-        .replace(/えー+っと|えーっと|えーと|えっと/g, '')
-        .replace(/あのー+|あの〜+/g, 'あの')
-        .replace(/そのー+|その〜+/g, 'その')
         .replace(/^[、,\s]+/, '')
         .replace(/[ \t\u3000]{2,}/g, ' ');
     }
@@ -882,12 +916,15 @@ class Transcriber {
       }
     }
 
+    const lastNorm = this._normalize(last);
+    const nextNorm = this._normalize(next);
+    const shortJa = this.language === 'ja-JP' && lastNorm.length >= 2 && lastNorm.length <= 8;
     if (
-      this._lastFromInterim &&
       last &&
       now - this._lastChunkAt < mergeMs &&
-      this._normalize(next).startsWith(this._normalize(last)) &&
-      this._normalize(next).length > this._normalize(last).length
+      (this._lastFromInterim || shortJa) &&
+      nextNorm.startsWith(lastNorm) &&
+      nextNorm.length > lastNorm.length
     ) {
       const current = this.finalTranscript || '';
       const base = current.slice(0, Math.max(0, current.length - last.length));
