@@ -278,6 +278,25 @@ assert(Transcriber.salvageWipedInterim('ja-JP', 'あ', '', '') === '', 'one-char
 assert(Transcriber.salvageWipedInterim('ja-JP', 'えー', '今日は', '') === '', 'real final is not doubled');
 assert(Transcriber.salvageWipedInterim('ja-JP', 'えー', '', 'あの') === '', 'replacement interim wins');
 assert(Transcriber.salvageWipedInterim('en-US', 'um', '', '') === '', 'english wipe stays v58');
+assert(
+  Transcriber.keepSupersededInterim('ja-JP', '今日はいい天気ですね', '', '明日の会議は三時から') === '今日はいい天気ですね',
+  'a new ja interim keeps the previous utterance'
+);
+assert(
+  Transcriber.keepSupersededInterim('ja-JP', '今日はいい', '', '今日はいい天気') === '',
+  'a growing ja interim is the same hypothesis'
+);
+assert(
+  Transcriber.keepSupersededInterim('ja-JP', '今日はいい天気', '', '今日はいい') === '',
+  'a shorter revision is the same hypothesis'
+);
+assert(
+  Transcriber.keepSupersededInterim('ja-JP', '三時から出ます', '', '3時から出ますね') === '',
+  'digit fold does not split one hypothesis'
+);
+assert(Transcriber.keepSupersededInterim('ja-JP', 'えー', '', '') === '', 'empty replacement stays on salvage');
+assert(Transcriber.keepSupersededInterim('ja-JP', 'あ', '', '明日') === '', 'one-character interim is not a committed utterance');
+assert(Transcriber.keepSupersededInterim('en-US', 'hello there', '', 'goodbye') === '', 'english interim is not force-committed');
 
 const shortFinal = [
   { transcript: 'えっと', confidence: 0.22 },
@@ -469,6 +488,32 @@ assert(Transcriber.jaLiveRecovery({
 assert(Transcriber.jaLiveRecovery({
   language: 'en-US', ios: false, hasInterim: false, gotResult: false, msSinceStart: 9000
 }) === 'none', 'english has no ja live stop');
+assert(Transcriber.jaStaleStopMs > Transcriber.jaResultGraceMs, 'stale stop waits longer than the late-hypothesis grace');
+assert(Transcriber.jaStaleStopMs > 2500, 'stale stop is not the 2.5s stall abort');
+assert(Transcriber.jaStaleRecovery({
+  language: 'ja-JP', ios: false, gotResult: true, msSinceResult: 900,
+  msSinceSpeechEnd: 900, resultAfterSpeechEnd: false
+}) === 'none', '900ms after speechend does not stop ja');
+assert(Transcriber.jaStaleRecovery({
+  language: 'ja-JP', ios: false, gotResult: true, msSinceResult: 2500,
+  msSinceSpeechEnd: 2500, resultAfterSpeechEnd: false
+}) === 'none', '2.5s after speechend does not stop ja');
+assert(Transcriber.jaStaleRecovery({
+  language: 'ja-JP', ios: false, gotResult: false, msSinceResult: 9000,
+  msSinceSpeechEnd: 9000, resultAfterSpeechEnd: false
+}) === 'none', 'the first hypothesis still belongs to the 8s watch');
+assert(Transcriber.jaStaleRecovery({
+  language: 'ja-JP', ios: false, gotResult: true, msSinceResult: 4500,
+  msSinceSpeechEnd: 4500, resultAfterSpeechEnd: false
+}) === 'stop', 'a crumb then silence is stopped so the next speech can be heard');
+assert(Transcriber.jaStaleRecovery({
+  language: 'ja-JP', ios: false, gotResult: true, msSinceResult: 1000,
+  msSinceSpeechEnd: 4500, resultAfterSpeechEnd: true
+}) === 'none', 'a hypothesis after speechend keeps the session');
+assert(Transcriber.jaStaleRecovery({
+  language: 'en-US', ios: false, gotResult: true, msSinceResult: 9000,
+  msSinceSpeechEnd: 9000, resultAfterSpeechEnd: false
+}) === 'none', 'english has no ja stale stop');
 
 const jaMic = AudioRecorder.speechAudioConstraints('ja-JP', false);
 const enMic = AudioRecorder.speechAudioConstraints('en-US', false);
@@ -501,10 +546,10 @@ assert(viz.includes('getSpeechPeak'), 'frame peak for short bursts');
 assert(viz.includes('_sampleSpeechPeak'), 'peak is sampled while drawing');
 assert(app.includes('usePeak'), 'desktop ja watch reads the peak');
 assert(app.includes('speechHotFlags'), 'stall does not reuse the gap peak');
-assert(!index.includes('v=61'), 'index cache bust left 61');
-assert(index.includes('v=62'), 'index is v62');
-assert(sw.includes("voicescribe-v62"), 'sw cache name');
-assert(!sw.includes('voicescribe-v61'), 'old sw name gone');
+assert(!index.includes('v=62'), 'index cache bust left 62');
+assert(index.includes('v=63'), 'index is v63');
+assert(sw.includes("voicescribe-v63"), 'sw cache name');
+assert(!sw.includes('voicescribe-v62'), 'old sw name gone');
 const micCalls = (src) => (src.match(/\.getUserMedia\s*\(/g) || []).length;
 const recorderSrc = fs.readFileSync(path.join(root, 'js/recorder.js'), 'utf8');
 assert(micCalls(viz) === 0, 'visualizer does not open a mic');
@@ -519,6 +564,13 @@ const liveWatch = transcriberSrc.slice(watchStart, transcriberSrc.indexOf('  _re
 assert(watchStart !== -1 && !liveWatch.includes('.abort('), 'ja live watch does not abort');
 assert(liveWatch.includes('.stop()'), 'ja live watch asks Chrome to return a result');
 assert(!transcriberSrc.includes('jaHungWatchMs'), '900ms speechend abort is gone');
+const unwedgeStart = transcriberSrc.indexOf('  _unwedgeJaSession() {');
+const unwedge = transcriberSrc.slice(unwedgeStart, transcriberSrc.indexOf('  static speechWatchProfile', unwedgeStart));
+assert(unwedgeStart !== -1 && !unwedge.includes('.abort('), 'ja unwedge does not abort');
+assert(unwedge.includes('.stop()'), 'ja unwedge asks Chrome for a result');
+const flushStart = transcriberSrc.indexOf('  _armJaSpeechEndFlush() {');
+const flush = transcriberSrc.slice(flushStart, unwedgeStart);
+assert(flushStart !== -1 && !flush.includes('.abort('), 'speechend flush does not abort');
 
 function listeningJa() {
   const t = new Transcriber();
@@ -539,8 +591,19 @@ jaLive.recognition = {
   abort() { jaAborted = true; },
   stop() { jaAborted = true; }
 };
-assert(jaLive.nudge('stall') === false, 'live ja speech is not stall-aborted');
-assert(jaAborted === false, 'stall does not call abort or stop on ja');
+assert(jaLive.nudge('stall') === false, 'ja without a hypothesis is not stall-cut');
+assert(jaAborted === false, 'stall does not call abort or stop before a ja hypothesis');
+
+const jaStale = listeningJa();
+jaStale._gotHypothesis = true;
+let staleStopped = false;
+let staleAborted = false;
+jaStale.recognition = {
+  abort() { staleAborted = true; },
+  stop() { staleStopped = true; }
+};
+assert(jaStale.nudge('stall') === true, 'stale ja speech stop()s so the next utterance is heard');
+assert(staleStopped === true && staleAborted === false, 'stale ja stall uses stop, not abort');
 
 let enAborted = false;
 const enLive = listeningJa();
@@ -572,6 +635,81 @@ assert(iosStart !== -1 && iosStart < recorderAt, 'iOS recognition stays before r
 assert(desktopStart > recorderAt, 'desktop recognition stays after recorder');
 assert(startFn.includes('if (!recognitionFirst)'), 'desktop path is gated');
 
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function proveSpeechEndFlush() {
+  const saved = Transcriber.jaStaleStopMs;
+  Transcriber.jaStaleStopMs = 60;
+  try {
+    const wedged = new Transcriber();
+    wedged.language = 'ja-JP';
+    wedged._isIOS = false;
+    const seen = [];
+    wedged.onResult = (finalText, interimText) => {
+      seen.push({ finalText, interimText });
+    };
+    assert(wedged.start() === true, 'wedged ja session starts');
+    wedged.recognition.onresult({ resultIndex: 0, results: [hypothesis('今日はいい天気ですね', false)] });
+    wedged.recognition.onspeechend();
+    assert(wedged.recognition.stopped === false, 'speechend does not stop inside the old 900ms window');
+    await wait(100);
+    assert(wedged.recognition.stopped === true, 'speechend with no later hypothesis stop()s');
+    assert(wedged.recognition.aborted === false, 'speechend flush does not abort');
+    assert(seen.some((row) => row.finalText.includes('今日はいい天気ですね')), 'the crumb is kept before the flush');
+    const dead = wedged.recognition;
+    wedged.recognition.onend();
+    await wait(80);
+    assert(wedged.recognition !== dead, 'flush restarts without waiting another grace period');
+    assert(wedged.isEngineRunning() === true, 'restarted session is listening');
+    wedged.stop();
+
+    const healthy = new Transcriber();
+    healthy.language = 'ja-JP';
+    healthy._isIOS = false;
+    assert(healthy.start() === true, 'healthy ja session starts');
+    healthy.recognition.onresult({ resultIndex: 0, results: [hypothesis('今日は', false)] });
+    healthy.recognition.onspeechend();
+    await wait(20);
+    healthy.recognition.onresult({
+      resultIndex: 0,
+      results: [hypothesis('今日はいい天気ですね', true)]
+    });
+    await wait(70);
+    assert(healthy.recognition.stopped === false, 'a result after speechend cancels the flush');
+    assert(healthy.getFullTranscript().includes('今日はいい天気ですね'), 'late final is still captioned');
+    healthy.stop();
+
+    const quiet = new Transcriber();
+    quiet.language = 'ja-JP';
+    quiet._isIOS = false;
+    assert(quiet.start() === true, 'pre-hypothesis session starts');
+    quiet.recognition.onspeechend();
+    await wait(90);
+    assert(quiet.recognition.stopped === false, 'speechend before any hypothesis does not stop early');
+    quiet.stop();
+
+    const replaced = new Transcriber();
+    replaced.language = 'ja-JP';
+    replaced._isIOS = false;
+    const paints = [];
+    replaced.onResult = (finalText, interimText) => {
+      paints.push({ finalText, interimText });
+    };
+    assert(replaced.start() === true, 'replacement session starts');
+    replaced.recognition.onresult({ resultIndex: 0, results: [hypothesis('今日はいい天気ですね', false)] });
+    replaced.recognition.onresult({ resultIndex: 0, results: [hypothesis('明日の会議は三時から', false)] });
+    const last = paints[paints.length - 1];
+    assert(last.finalText.includes('今日はいい天気ですね'), 'superseded ja interim is committed');
+    assert(last.interimText === '明日の会議は三時から', 'the new interim stays live');
+    replaced.stop();
+  } finally {
+    Transcriber.jaStaleStopMs = saved;
+  }
+}
+
+proveSpeechEndFlush().then(() => {
 console.log('\n--- summary ---');
 rows.forEach((row) => {
   console.log(`${row.changed ? 'CHANGED' : 'SAME   '} ${row.name}`);
@@ -579,3 +717,7 @@ rows.forEach((row) => {
 console.log(failed ? `\n${failed} assertion(s) failed` : '\nall assertions passed');
 console.log('Live Chrome Web Speech was not executed. Rows are client-side handling of example hypotheses.');
 process.exit(failed ? 1 : 0);
+}).catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
