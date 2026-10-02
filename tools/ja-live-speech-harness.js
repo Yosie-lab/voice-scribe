@@ -14,6 +14,7 @@ global.navigator = {
   platform: 'Linux',
   maxTouchPoints: 0
 };
+global.document = { visibilityState: 'visible' };
 
 const Transcriber = require('../js/transcriber.js');
 const AudioRecorder = require('../js/recorder.js');
@@ -348,35 +349,61 @@ record(
 );
 assert(roomFlags.gap === true, 'room peak still counts for a dead ja engine');
 assert(roomFlags.stall === false, 'room peak does not abort a live ja engine');
-assert(loudFlags.stall === true, 'loud EMA can still recover a wedged ja session');
+assert(loudFlags.stall === true, 'loud EMA is still hot on the ja meter');
 assert(enRoom.gap === false && enRoom.stall === false, 'english room peak stays cold');
 assert(gapHotMs >= jaProfile.gapMs && stallHotMs === 0, '1.6s of room peak never arms ja stall');
 
 record(
   'desktop restart ms (no-speech / end)',
   `en ${Transcriber.restartDelay('no-speech', false, 'en-US')}/${Transcriber.restartDelay('end', false, 'en-US')} ios ${Transcriber.restartDelay('no-speech', true, 'ja-JP')}/${Transcriber.restartDelay('end', true, 'ja-JP')}`,
-  `ja ${Transcriber.restartDelay('no-speech', false, 'ja-JP')}/${Transcriber.restartDelay('end', false, 'ja-JP')}`
+  `ja ${Transcriber.restartDelay('no-speech', false, 'ja-JP')}/${Transcriber.restartDelay('end', false, 'ja-JP')} grace ${Transcriber.endRestartDelay(false, 'ja-JP', 'end', 1000, 2000)}`
 );
 assert(Transcriber.restartDelay('no-speech', false, 'en-US') === 25, 'en no-speech');
 assert(Transcriber.restartDelay('end', false, 'en-US') === 35, 'en end');
 assert(Transcriber.restartDelay('stall', false, 'en-US') === 30, 'en stall');
 assert(Transcriber.restartDelay('no-speech', true, 'ja-JP') === 70, 'ios no-speech');
 assert(Transcriber.restartDelay('end', true, 'ja-JP') === 90, 'ios end');
-assert(Transcriber.restartDelay('no-speech', false, 'ja-JP') === 15, 'ja no-speech');
-assert(Transcriber.restartDelay('end', false, 'ja-JP') === 20, 'ja end');
+assert(Transcriber.restartDelay('no-speech', false, 'ja-JP') === 25, 'ja no-speech matches english');
+assert(Transcriber.restartDelay('end', false, 'ja-JP') === 35, 'ja end matches english');
+assert(
+  Transcriber.endRestartDelay(false, 'ja-JP', 'end', 1000, 2000) === Transcriber.jaResultGraceMs,
+  'ja waits out a result that arrives after speechend'
+);
+assert(
+  Transcriber.endRestartDelay(false, 'ja-JP', 'end', 2500, 2000) === 35,
+  'ja restarts promptly once the hypothesis arrived'
+);
+assert(
+  Transcriber.endRestartDelay(false, 'en-US', 'end', 1000, 2000) === 35,
+  'english end delay unchanged'
+);
+assert(Transcriber.jaResultGraceMs >= 2500, 'grace is longer than the v60 stall window');
+
+assert(Transcriber.useContinuous('ja-JP', false) === false, 'desktop ja is utterance mode');
+assert(Transcriber.useContinuous('ja-JP', true) === false, 'ios ja stays utterance mode');
+assert(Transcriber.useContinuous('en-US', false) === true, 'english desktop stays continuous');
 
 assert(Transcriber.shouldRecoverHungRecognition({
   language: 'ja-JP', ios: false, msSinceResult: 900, hasInterim: true
-}) === true, 'ja hung interim');
+}) === false, 'speechend does not abort a ja interim');
 assert(Transcriber.shouldRecoverHungRecognition({
-  language: 'ja-JP', ios: false, msSinceResult: 900, hasInterim: false
-}) === false, 'no interim means do not abort');
-assert(Transcriber.shouldRecoverHungRecognition({
-  language: 'en-US', ios: false, msSinceResult: 5000, hasInterim: true
-}) === false, 'english hung watch off');
-assert(Transcriber.shouldRecoverHungRecognition({
-  language: 'ja-JP', ios: true, msSinceResult: 5000, hasInterim: true
-}) === false, 'ios hung watch off');
+  language: 'ja-JP', ios: false, msSinceResult: 5000, hasInterim: false
+}) === false, 'no speechend abort without interim');
+assert(Transcriber.jaLiveRecovery({
+  language: 'ja-JP', ios: false, hasInterim: false, gotResult: false, msSinceStart: 2500
+}) === 'none', '2.5s of ja speech is not cut');
+assert(Transcriber.jaLiveRecovery({
+  language: 'ja-JP', ios: false, hasInterim: true, gotResult: false, msSinceStart: 9000
+}) === 'none', 'visible interim is not cut');
+assert(Transcriber.jaLiveRecovery({
+  language: 'ja-JP', ios: false, hasInterim: false, gotResult: true, msSinceStart: 9000
+}) === 'none', 'a hypothesis disables the live stop');
+assert(Transcriber.jaLiveRecovery({
+  language: 'ja-JP', ios: false, hasInterim: false, gotResult: false, msSinceStart: 8000
+}) === 'stop', 'a wedged ja session is stopped, not aborted');
+assert(Transcriber.jaLiveRecovery({
+  language: 'en-US', ios: false, hasInterim: false, gotResult: false, msSinceStart: 9000
+}) === 'none', 'english has no ja live stop');
 
 const jaMic = AudioRecorder.speechAudioConstraints('ja-JP', false);
 const enMic = AudioRecorder.speechAudioConstraints('en-US', false);
@@ -409,10 +436,10 @@ assert(viz.includes('getSpeechPeak'), 'frame peak for short bursts');
 assert(viz.includes('_sampleSpeechPeak'), 'peak is sampled while drawing');
 assert(app.includes('usePeak'), 'desktop ja watch reads the peak');
 assert(app.includes('speechHotFlags'), 'stall does not reuse the gap peak');
-assert(!index.includes('v=59'), 'index cache bust left 59');
-assert(index.includes('v=60'), 'index is v60');
-assert(sw.includes("voicescribe-v60"), 'sw cache name');
-assert(!sw.includes('voicescribe-v59'), 'old sw name gone');
+assert(!index.includes('v=60'), 'index cache bust left 60');
+assert(index.includes('v=61'), 'index is v61');
+assert(sw.includes("voicescribe-v61"), 'sw cache name');
+assert(!sw.includes('voicescribe-v60'), 'old sw name gone');
 const micCalls = (src) => (src.match(/\.getUserMedia\s*\(/g) || []).length;
 const recorderSrc = fs.readFileSync(path.join(root, 'js/recorder.js'), 'utf8');
 assert(micCalls(viz) === 0, 'visualizer does not open a mic');
@@ -422,6 +449,55 @@ assert(micCalls(recorderSrc) === 2, 'still one mic open path');
 assert(!recorderSrc.includes('noiseSuppression: false'), 'no exact NS off before recognition');
 assert(transcriberSrc.includes("this.language = 'ja-JP'"), 'default language stays ja-JP');
 assert(transcriberSrc.includes('this.recognition.lang = this.language'), 'recognition.lang follows setLanguage');
+const watchStart = transcriberSrc.indexOf('  _armJaLiveWatch() {');
+const liveWatch = transcriberSrc.slice(watchStart, transcriberSrc.indexOf('  _restartDelayFor', watchStart));
+assert(watchStart !== -1 && !liveWatch.includes('.abort('), 'ja live watch does not abort');
+assert(liveWatch.includes('.stop()'), 'ja live watch asks Chrome to return a result');
+assert(!transcriberSrc.includes('jaHungWatchMs'), '900ms speechend abort is gone');
+
+function listeningJa() {
+  const t = new Transcriber();
+  t.language = 'ja-JP';
+  t._isIOS = false;
+  t.shouldRestart = true;
+  t.isListening = true;
+  t._engineRunning = true;
+  t._lastResultAt = Date.now() - 5000;
+  t._heardSpeechAt = Date.now() - 5000;
+  t.interimTranscript = '';
+  return t;
+}
+
+let jaAborted = false;
+const jaLive = listeningJa();
+jaLive.recognition = {
+  abort() { jaAborted = true; },
+  stop() { jaAborted = true; }
+};
+assert(jaLive.nudge('stall') === false, 'live ja speech is not stall-aborted');
+assert(jaAborted === false, 'stall does not call abort or stop on ja');
+
+let enAborted = false;
+const enLive = listeningJa();
+enLive.language = 'en-US';
+enLive.recognition = {
+  abort() { enAborted = true; },
+  stop() {},
+  start() {}
+};
+assert(enLive.nudge('stall') === true, 'english stall abort remains');
+assert(enAborted === true, 'english stall still aborts');
+enLive.stop();
+
+const jaGap = listeningJa();
+jaGap._engineRunning = false;
+let gapRestarted = false;
+jaGap._restartTimer = setTimeout(() => { gapRestarted = true; }, 10000);
+const keptTimer = jaGap._restartTimer;
+assert(jaGap.nudge('gap') === false, 'ja peak does not cancel a scheduled restart');
+assert(jaGap._restartTimer === keptTimer, 'scheduled ja restart stays armed');
+clearTimeout(keptTimer);
+assert(gapRestarted === false, 'preempted restart did not run');
 
 const startFn = app.slice(app.indexOf('async _startRecording'), app.indexOf('async _stopRecording'));
 const recorderAt = startFn.indexOf('this.recorder.start');
