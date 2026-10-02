@@ -379,9 +379,74 @@ assert(
 );
 assert(Transcriber.jaResultGraceMs >= 2500, 'grace is longer than the v60 stall window');
 
-assert(Transcriber.useContinuous('ja-JP', false) === false, 'desktop ja is utterance mode');
+assert(Transcriber.useContinuous('ja-JP', false) === true, 'desktop ja streams while speaking');
 assert(Transcriber.useContinuous('ja-JP', true) === false, 'ios ja stays utterance mode');
 assert(Transcriber.useContinuous('en-US', false) === true, 'english desktop stays continuous');
+
+function FakeRecognition() {
+  this.stopped = false;
+  this.aborted = false;
+}
+FakeRecognition.prototype.start = function() {
+  if (typeof this.onstart === 'function') this.onstart();
+};
+FakeRecognition.prototype.stop = function() {
+  this.stopped = true;
+};
+FakeRecognition.prototype.abort = function() {
+  this.aborted = true;
+};
+
+function hypothesis(text, isFinal) {
+  const result = [{ transcript: text, confidence: 0 }];
+  result.isFinal = isFinal;
+  return result;
+}
+
+global.SpeechRecognition = FakeRecognition;
+const liveJa = new Transcriber();
+liveJa._isIOS = false;
+liveJa.language = 'ja-JP';
+const paints = [];
+liveJa.onResult = (finalText, interimText) => {
+  paints.push({ finalText, interimText });
+};
+assert(liveJa.start() === true, 'desktop ja recognition starts');
+assert(liveJa.recognition.continuous === true, 'started desktop ja session is continuous');
+assert(liveJa.recognition.interimResults === true, 'desktop ja still requests interims');
+liveJa.recognition.onresult({ resultIndex: 0, results: [hypothesis('今日', false)] });
+liveJa.recognition.onresult({ resultIndex: 0, results: [hypothesis('今日はいい天気', false)] });
+assert(paints.length === 2, 'each interim paints before the utterance ends');
+assert(paints[0].finalText === '' && paints[0].interimText === '今日', 'first interim is visible immediately');
+assert(
+  paints[1].finalText === '' && paints[1].interimText === '今日はいい天気',
+  'interim grows while speech is still in progress'
+);
+assert(liveJa.isEngineRunning() === true, 'interim did not end the session');
+liveJa.recognition.onspeechend();
+assert(liveJa.recognition.stopped === false && liveJa.recognition.aborted === false, 'speechend does not stop or abort');
+liveJa.recognition.onresult({
+  resultIndex: 0,
+  results: [hypothesis('今日はいい天気ですね', true)]
+});
+assert(paints.length === 3, 'final is a separate paint, not a batch of earlier interims');
+assert(paints[2].interimText === '', 'final clears the interim');
+assert(paints[2].finalText.includes('今日はいい天気ですね'), 'final still lands in the caption');
+liveJa.stop();
+
+const liveIos = new Transcriber();
+liveIos._isIOS = true;
+liveIos.language = 'ja-JP';
+assert(liveIos.start() === true, 'ios recognition starts');
+assert(liveIos.recognition.continuous === false, 'ios session stays utterance mode');
+liveIos.stop();
+
+const liveEn = new Transcriber();
+liveEn._isIOS = false;
+liveEn.language = 'en-US';
+assert(liveEn.start() === true, 'english recognition starts');
+assert(liveEn.recognition.continuous === true, 'english session stays continuous');
+liveEn.stop();
 
 assert(Transcriber.shouldRecoverHungRecognition({
   language: 'ja-JP', ios: false, msSinceResult: 900, hasInterim: true
@@ -436,10 +501,10 @@ assert(viz.includes('getSpeechPeak'), 'frame peak for short bursts');
 assert(viz.includes('_sampleSpeechPeak'), 'peak is sampled while drawing');
 assert(app.includes('usePeak'), 'desktop ja watch reads the peak');
 assert(app.includes('speechHotFlags'), 'stall does not reuse the gap peak');
-assert(!index.includes('v=60'), 'index cache bust left 60');
-assert(index.includes('v=61'), 'index is v61');
-assert(sw.includes("voicescribe-v61"), 'sw cache name');
-assert(!sw.includes('voicescribe-v60'), 'old sw name gone');
+assert(!index.includes('v=61'), 'index cache bust left 61');
+assert(index.includes('v=62'), 'index is v62');
+assert(sw.includes("voicescribe-v62"), 'sw cache name');
+assert(!sw.includes('voicescribe-v61'), 'old sw name gone');
 const micCalls = (src) => (src.match(/\.getUserMedia\s*\(/g) || []).length;
 const recorderSrc = fs.readFileSync(path.join(root, 'js/recorder.js'), 'utf8');
 assert(micCalls(viz) === 0, 'visualizer does not open a mic');
