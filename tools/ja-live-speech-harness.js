@@ -316,8 +316,41 @@ assert(Transcriber.isSpeechHot(quietLevel, enProfile.floor, enProfile) === false
 assert(Transcriber.isSpeechHot(0.02, enProfile.floor, enProfile) === hotV57(0.02, 0.012), 'english 0.02 same');
 assert(iosProfile.abs === 0.018 && iosProfile.gapMs === 600 && !iosProfile.usePeak, 'iOS profile unchanged');
 assert(enProfile.resultMs === 2500 && enProfile.stallMs === 2000 && enProfile.gapMs === 600 && !enProfile.usePeak, 'english stall unchanged');
-assert(jaProfile.gapMs === 200 && jaProfile.usePeak === true, 'ja restarts on one short peak');
-assert(jaProfile.stallMs === 1400 && jaProfile.resultMs === 1600, 'ja does not abort a live session sooner');
+assert(jaProfile.gapMs === 200 && jaProfile.usePeak === true, 'ja restarts a dead engine on one short peak');
+assert(
+  jaProfile.stallMs === enProfile.stallMs && jaProfile.resultMs === enProfile.resultMs,
+  'ja live abort window matches english'
+);
+assert(jaProfile.stallAbs === 0.018 && jaProfile.stallMult === 3.2, 'ja stall threshold matches english');
+
+const roomEma = 0.005;
+const roomPeak = 0.012;
+const roomFlags = Transcriber.speechHotFlags(
+  jaProfile, roomEma, roomPeak, jaProfile.floor, jaProfile.stallFloor
+);
+const loudFlags = Transcriber.speechHotFlags(
+  jaProfile, 0.05, 0.08, jaProfile.floor, jaProfile.stallFloor
+);
+const enRoom = Transcriber.speechHotFlags(enProfile, roomEma, roomPeak, enProfile.floor, enProfile.floor);
+let gapHotMs = 0;
+let stallHotMs = 0;
+for (let t = 0; t < 1600; t += 200) {
+  const step = Transcriber.speechHotFlags(
+    jaProfile, roomEma, roomPeak, jaProfile.floor, jaProfile.stallFloor
+  );
+  gapHotMs = step.gap ? gapHotMs + 200 : 0;
+  stallHotMs = step.stall ? stallHotMs + 200 : 0;
+}
+record(
+  'room peak must not abort live ja',
+  'v59 stall at 1400/1600 on peak 0.012',
+  `gap ${gapHotMs}ms stall ${stallHotMs}ms`
+);
+assert(roomFlags.gap === true, 'room peak still counts for a dead ja engine');
+assert(roomFlags.stall === false, 'room peak does not abort a live ja engine');
+assert(loudFlags.stall === true, 'loud EMA can still recover a wedged ja session');
+assert(enRoom.gap === false && enRoom.stall === false, 'english room peak stays cold');
+assert(gapHotMs >= jaProfile.gapMs && stallHotMs === 0, '1.6s of room peak never arms ja stall');
 
 record(
   'desktop restart ms (no-speech / end)',
@@ -354,11 +387,16 @@ record(
   `en ${enMic.noiseSuppression.ideal} ios-ja ${iosMic.noiseSuppression.ideal} default ${bareMic.noiseSuppression.ideal}`,
   `desktop-ja ${jaMic.noiseSuppression.ideal} agc ${jaMic.autoGainControl.ideal}`
 );
-assert(jaMic.noiseSuppression.ideal === false, 'ja desktop asks NS off');
+assert(jaMic.noiseSuppression.ideal === true, 'ja desktop keeps NS on');
 assert(jaMic.autoGainControl.ideal === true, 'ja keeps AGC');
-assert(jaMic.googNoiseSuppression === false, 'ja goog NS off');
+assert(jaMic.googNoiseSuppression === true, 'ja goog NS stays on');
 assert(enMic.noiseSuppression.ideal === true && enMic.googNoiseSuppression === true, 'en NS on');
 assert(iosMic.noiseSuppression.ideal === true, 'ios NS on');
+assert(
+  jaMic.noiseSuppression.ideal === enMic.noiseSuppression.ideal
+    && jaMic.googNoiseSuppression === enMic.googNoiseSuppression,
+  'ja mic constraints match english'
+);
 assert(bareMic.noiseSuppression.ideal === true && bareMic.googAutoGainControl === true, 'default constraints stay v57');
 
 const root = path.join(__dirname, '..');
@@ -370,15 +408,20 @@ const viz = fs.readFileSync(path.join(root, 'js/visualizer.js'), 'utf8');
 assert(viz.includes('getSpeechPeak'), 'frame peak for short bursts');
 assert(viz.includes('_sampleSpeechPeak'), 'peak is sampled while drawing');
 assert(app.includes('usePeak'), 'desktop ja watch reads the peak');
-assert(!index.includes('v=58'), 'index cache bust left 58');
-assert(index.includes('v=59'), 'index is v59');
-assert(sw.includes("voicescribe-v59"), 'sw cache name');
-assert(!sw.includes('voicescribe-v58'), 'old sw name gone');
+assert(app.includes('speechHotFlags'), 'stall does not reuse the gap peak');
+assert(!index.includes('v=59'), 'index cache bust left 59');
+assert(index.includes('v=60'), 'index is v60');
+assert(sw.includes("voicescribe-v60"), 'sw cache name');
+assert(!sw.includes('voicescribe-v59'), 'old sw name gone');
 const micCalls = (src) => (src.match(/\.getUserMedia\s*\(/g) || []).length;
+const recorderSrc = fs.readFileSync(path.join(root, 'js/recorder.js'), 'utf8');
 assert(micCalls(viz) === 0, 'visualizer does not open a mic');
 assert(micCalls(app) === 0, 'app must not open a mic');
 assert(micCalls(transcriberSrc) === 0, 'transcriber must not open a mic');
-assert(micCalls(fs.readFileSync(path.join(root, 'js/recorder.js'), 'utf8')) === 2, 'still one mic open path');
+assert(micCalls(recorderSrc) === 2, 'still one mic open path');
+assert(!recorderSrc.includes('noiseSuppression: false'), 'no exact NS off before recognition');
+assert(transcriberSrc.includes("this.language = 'ja-JP'"), 'default language stays ja-JP');
+assert(transcriberSrc.includes('this.recognition.lang = this.language'), 'recognition.lang follows setLanguage');
 
 const startFn = app.slice(app.indexOf('async _startRecording'), app.indexOf('async _stopRecording'));
 const recorderAt = startFn.indexOf('this.recorder.start');
