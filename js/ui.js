@@ -189,6 +189,20 @@ class UIManager {
   }
 
   /**
+   * 録音画面ヘッダのクリア / Obsidian。クリアは文字があれば録音中も出す。
+   * @param {number} textLength
+   * @param {boolean} isRecording
+   * @returns {{showClear: boolean, showObsidian: boolean}}
+   */
+  static transcriptChrome(textLength, isRecording) {
+    const hasText = textLength > 0;
+    return {
+      showClear: hasText,
+      showObsidian: hasText && !isRecording
+    };
+  }
+
+  /**
    * 文字起こしテキストをリアルタイム描画
    * @param {string} finalText - 確定テキスト
    * @param {string} interimText - 暫定テキスト（発話中の言葉）
@@ -211,13 +225,13 @@ class UIManager {
       charCountEl.textContent = totalText.length;
     }
 
-    // クリア / Obsidian保存は、録音停止後に文字があるときだけ出す
-    const showAfterStop = totalText.length > 0 && !isRecording;
+    // クリアは文字があるあいだ常に出す（録音中を含む）。Obsidian 保存は停止後だけ。
+    const chrome = UIManager.transcriptChrome(totalText.length, isRecording);
     if (clearBtn) {
-      clearBtn.style.display = showAfterStop ? 'inline-flex' : 'none';
+      clearBtn.style.display = chrome.showClear ? 'inline-flex' : 'none';
     }
     if (obsidianBtn) {
-      obsidianBtn.style.display = showAfterStop ? 'inline-flex' : 'none';
+      obsidianBtn.style.display = chrome.showObsidian ? 'inline-flex' : 'none';
     }
 
     // 空状態のハンドリング
@@ -640,3 +654,6 @@ class UIManager {
 
 // グローバルエクスポート
 window.UIManager = UIManager;
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = UIManager;
+}

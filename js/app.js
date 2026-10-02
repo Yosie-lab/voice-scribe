@@ -36,6 +36,7 @@ class VoiceScribeApp {
     this._speechHotMs = 0;
     this._stallFloor = 0.012;
     this._stallHotMs = 0;
+    this._transcriptEpoch = 0;
 
     window.app = this;
   }
@@ -125,13 +126,12 @@ class VoiceScribeApp {
       pauseBtn.addEventListener('click', () => this._togglePause());
     }
 
-    // クリアボタン
+    // クリアは録音中も有効。ジェスチャの pointerdown は preventDefault しない。
     const clearBtn = document.getElementById('clear-transcript-btn');
     if (clearBtn) {
-      clearBtn.addEventListener('click', () => {
-        if (this.isRecording) return;
-        this.ui.updateTranscript('', '', false);
-        this.transcriber.reset();
+      clearBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        this._clearTranscript();
       });
     }
 
@@ -155,6 +155,21 @@ class VoiceScribeApp {
     this.transcriber.onError = (message) => {
       this.ui.showToast(message, 'error');
     };
+  }
+
+  /**
+   * 画面上の文字起こしと認識バッファを消す。録音とマイクはそのまま。
+   * 録音中は同じストリームのまま認識だけ付け直し、消した仮説を次の onresult で戻さない。
+   * @private
+   */
+  _clearTranscript() {
+    this._transcriptEpoch += 1;
+    const keepListening = this.isRecording && !this._userPaused && this.transcriber.isListening;
+    this.transcriber.reset();
+    if (keepListening) {
+      this.transcriber.continueListening();
+    }
+    this.ui.updateTranscript('', '', this.isRecording);
   }
 
   /**
@@ -262,6 +277,7 @@ class VoiceScribeApp {
    * @private
    */
   async _stopRecordingBody() {
+    const uiEpoch = this._transcriptEpoch;
     this._stopSpeechWatch();
     this._recoverGen++;
     if (this._recoverTimer) {
@@ -293,7 +309,7 @@ class VoiceScribeApp {
       console.warn('Recorder stop warning:', e);
     }
 
-    this._finishRecordingUi(transcript);
+    this._finishRecordingUi(transcript, uiEpoch);
 
     try {
       const activeLangBtn = document.querySelector('.lang-btn.active');
@@ -337,13 +353,15 @@ class VoiceScribeApp {
         await this.storage.save(recording);
         await this._refreshRecordingsList();
         this.ui.showToast('✅ 録音と文字起こしを保存しました', 'success');
-        this.ui.updateTranscript(finalTranscript, '', false);
+        if (uiEpoch === this._transcriptEpoch) {
+          this.ui.updateTranscript(finalTranscript, '', false);
+        }
       }
 
       this.ui.updateTimer(0);
     } catch (error) {
       console.error('録音停止エラー:', error);
-      this._finishRecordingUi(transcript);
+      this._finishRecordingUi(transcript, uiEpoch);
       this._whisperBusy = false;
       if (this.ui.hideWhisperOverlay) this.ui.hideWhisperOverlay();
     }
@@ -354,7 +372,7 @@ class VoiceScribeApp {
    * @param {string} [transcript]
    * @private
    */
-  _finishRecordingUi(transcript) {
+  _finishRecordingUi(transcript, uiEpoch) {
     this.isRecording = false;
     this._userPaused = false;
     this._backgrounded = false;
@@ -376,7 +394,9 @@ class VoiceScribeApp {
       btn.style.pointerEvents = '';
       btn.style.opacity = '';
     });
-    if (typeof transcript === 'string') {
+    if (uiEpoch !== undefined && uiEpoch !== this._transcriptEpoch) {
+      this.ui.updateTranscript('', '', false);
+    } else if (typeof transcript === 'string') {
       this.ui.updateTranscript(transcript, '', false);
     }
     if (this._recognitionGesture) {
@@ -399,6 +419,7 @@ class VoiceScribeApp {
         return;
       }
       const target = event.target;
+      // クリアは次の click に任せる。このリスナはイベントを止めない。
       if (target && target.closest && target.closest('#record-btn, #pause-btn, #clear-transcript-btn')) return;
       if (this.transcriber.isEngineRunning()) {
         document.removeEventListener('pointerdown', onPointer, true);

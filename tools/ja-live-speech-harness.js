@@ -467,12 +467,23 @@ assert(liveEn.start() === true, 'english recognition starts');
 assert(liveEn.recognition.continuous === true, 'english session stays continuous');
 liveEn.stop();
 
-assert(Transcriber.shouldRecoverHungRecognition({
-  language: 'ja-JP', ios: false, msSinceResult: 900, hasInterim: true
-}) === false, 'speechend does not abort a ja interim');
-assert(Transcriber.shouldRecoverHungRecognition({
-  language: 'ja-JP', ios: false, msSinceResult: 5000, hasInterim: false
-}) === false, 'no speechend abort without interim');
+const clearing = new Transcriber();
+clearing.language = 'ja-JP';
+clearing._isIOS = false;
+assert(clearing.start() === true, 'session to clear starts');
+clearing.recognition.onresult({ resultIndex: 0, results: [hypothesis('今日はいい天気ですね', true)] });
+assert(clearing.getFullTranscript().includes('今日はいい天気ですね'), 'caption exists before clear');
+const liveEngine = clearing.recognition;
+let disposed = false;
+liveEngine.abort = () => { disposed = true; };
+liveEngine.stop = () => { disposed = true; };
+clearing.reset();
+assert(clearing.getFullTranscript() === '', 'reset drops caption buffers');
+assert(disposed === false, 'reset does not stop or abort the engine');
+assert(clearing.recognition === liveEngine, 'reset keeps the recognition instance');
+assert(clearing.isListening === true && clearing.shouldRestart === true, 'reset leaves the session running');
+clearing.stop();
+
 assert(Transcriber.jaLiveRecovery({
   language: 'ja-JP', ios: false, hasInterim: false, gotResult: false, msSinceStart: 2500
 }) === 'none', '2.5s of ja speech is not cut');
@@ -546,10 +557,10 @@ assert(viz.includes('getSpeechPeak'), 'frame peak for short bursts');
 assert(viz.includes('_sampleSpeechPeak'), 'peak is sampled while drawing');
 assert(app.includes('usePeak'), 'desktop ja watch reads the peak');
 assert(app.includes('speechHotFlags'), 'stall does not reuse the gap peak');
-assert(!index.includes('v=62'), 'index cache bust left 62');
-assert(index.includes('v=63'), 'index is v63');
-assert(sw.includes("voicescribe-v63"), 'sw cache name');
-assert(!sw.includes('voicescribe-v62'), 'old sw name gone');
+assert(!index.includes('v=63'), 'index cache bust left 63');
+assert(index.includes('v=64'), 'index is v64');
+assert(sw.includes("voicescribe-v64"), 'sw cache name');
+assert(!sw.includes('voicescribe-v63'), 'old sw name gone');
 const micCalls = (src) => (src.match(/\.getUserMedia\s*\(/g) || []).length;
 const recorderSrc = fs.readFileSync(path.join(root, 'js/recorder.js'), 'utf8');
 assert(micCalls(viz) === 0, 'visualizer does not open a mic');
@@ -559,18 +570,55 @@ assert(micCalls(recorderSrc) === 2, 'still one mic open path');
 assert(!recorderSrc.includes('noiseSuppression: false'), 'no exact NS off before recognition');
 assert(transcriberSrc.includes("this.language = 'ja-JP'"), 'default language stays ja-JP');
 assert(transcriberSrc.includes('this.recognition.lang = this.language'), 'recognition.lang follows setLanguage');
-const watchStart = transcriberSrc.indexOf('  _armJaLiveWatch() {');
-const liveWatch = transcriberSrc.slice(watchStart, transcriberSrc.indexOf('  _restartDelayFor', watchStart));
-assert(watchStart !== -1 && !liveWatch.includes('.abort('), 'ja live watch does not abort');
+function methodBody(src, signature) {
+  const start = src.indexOf(signature);
+  if (start < 0) return '';
+  const brace = src.indexOf('{', start);
+  let depth = 0;
+  for (let i = brace; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return src.slice(start, i + 1);
+    }
+  }
+  return '';
+}
+
+const liveWatch = methodBody(transcriberSrc, '  _armJaLiveWatch() {');
+assert(liveWatch && !liveWatch.includes('.abort('), 'ja live watch does not abort');
 assert(liveWatch.includes('.stop()'), 'ja live watch asks Chrome to return a result');
 assert(!transcriberSrc.includes('jaHungWatchMs'), '900ms speechend abort is gone');
-const unwedgeStart = transcriberSrc.indexOf('  _unwedgeJaSession() {');
-const unwedge = transcriberSrc.slice(unwedgeStart, transcriberSrc.indexOf('  static speechWatchProfile', unwedgeStart));
-assert(unwedgeStart !== -1 && !unwedge.includes('.abort('), 'ja unwedge does not abort');
+assert(!transcriberSrc.includes('shouldRecoverHungRecognition'), 'dead speechend abort policy is gone');
+const unwedge = methodBody(transcriberSrc, '  _unwedgeJaSession() {');
+assert(unwedge && !unwedge.includes('.abort('), 'ja unwedge does not abort');
 assert(unwedge.includes('.stop()'), 'ja unwedge asks Chrome for a result');
-const flushStart = transcriberSrc.indexOf('  _armJaSpeechEndFlush() {');
-const flush = transcriberSrc.slice(flushStart, unwedgeStart);
-assert(flushStart !== -1 && !flush.includes('.abort('), 'speechend flush does not abort');
+const flush = methodBody(transcriberSrc, '  _armJaSpeechEndFlush() {');
+assert(flush && !flush.includes('.abort('), 'speechend flush does not abort');
+const ingest = methodBody(transcriberSrc, '  _ingestResult(event) {');
+assert(ingest && !ingest.includes('.abort(') && !ingest.includes('.stop('), 'result commit does not end the session');
+assert(transcriberSrc.includes('_isDesktopJa()'), 'desktop ja policy is one helper');
+
+const UIManager = require('../js/ui.js');
+assert(UIManager.transcriptChrome(4, true).showClear === true, 'clear stays visible while recording');
+assert(UIManager.transcriptChrome(4, true).showObsidian === false, 'obsidian stays after stop');
+assert(UIManager.transcriptChrome(4, false).showClear === true, 'clear shows after stop when there is text');
+assert(UIManager.transcriptChrome(4, false).showObsidian === true, 'obsidian shows after stop');
+assert(UIManager.transcriptChrome(0, false).showClear === false, 'clear hides when the transcript is empty');
+assert(UIManager.transcriptChrome(0, true).showClear === false, 'clear hides during recording with no text');
+
+const clearFn = methodBody(app, '  _clearTranscript() {');
+assert(clearFn.includes('this.transcriber.reset()'), 'clear resets transcriber buffers');
+assert(clearFn.includes('continueListening()'), 'clear recycles recognition without a new mic');
+assert(clearFn.includes("updateTranscript('', '', this.isRecording)"), 'clear keeps the recording flag in the UI');
+assert(!clearFn.includes('getUserMedia'), 'clear does not open a microphone');
+assert(!/if\s*\(\s*this\.isRecording\s*\)\s*return/.test(app.slice(app.indexOf("getElementById('clear-transcript-btn')"), app.indexOf('_clearTranscript'))), 'clear click is not a no-op while recording');
+const gesture = methodBody(app, '  _armRecognitionGesture() {');
+assert(gesture.includes('#clear-transcript-btn'), 'gesture ignores the clear control');
+assert(!gesture.includes('preventDefault'), 'gesture does not swallow the clear click');
+assert(!gesture.includes('stopPropagation'), 'gesture does not stop the clear click');
+assert(!gesture.includes('stopImmediatePropagation'), 'gesture does not stop the clear click immediately');
 
 function listeningJa() {
   const t = new Transcriber();

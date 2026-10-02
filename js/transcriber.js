@@ -1,19 +1,15 @@
 /**
- * VoiceScribe — 音声認識（文字起こし）モジュール
- * Web Speech API (webkitSpeechRecognition) を利用したリアルタイム音声文字起こし。
- * 認識品質の上限は OS / ブラウザ側。認識器自身のマイクは増幅できない。
- * ここでは取りこぼし（無音扱い、再起動の隙間、尻切れ、フィラー削除、短い暫定の破棄）を減らす。
- * desktop の ja-JP は、モーラの尻と、死んだ認識の再起動だけを英語より敏感にする。
- * 動いている ja-JP は abort しない。Chrome の日本語仮説は英語より遅く、
- * abort はアップロード済みの音声を捨てる。v60 は部屋ノイズの stall だけ外したが、
- * 本発話の stall（2.5 秒）と speechend 後 900ms の abort は残っていた。
- * v61 は abort を止めた代わりに desktop ja を continuous:false にした。
- * 単発認識は仮説を発話終了（または無応答の stop）まで溜めるので、話しているあいだ字幕が動かない。
- * desktop ja は英語と同じ continuous:true。iOS は false のまま。abort は戻さない。
- * v62 は最初の仮説のあと回復を止めた。Chrome の ja-JP は短い暫定のあと speechend し、
- * セッションは動いたまま次の音声を上げない。仮説があるので 8 秒の stop も stall も走らず、
- * 字幕は最初の数文字で止まる。仮説のあと jaStaleStopMs 結果が無いときだけ stop() する。
- * 900ms の abort と、仮説が無い 2.5 秒の切断は戻さない。
+ * VoiceScribe — 音声認識（文字起こし）
+ *
+ * 担当を分ける:
+ * - セッション: start / stop / continue / 再起動。マイクは開かない。
+ * - 結果の確定: 候補選択、暫定の保全、重なり結合、描画コールバック。
+ * - 回復: desktop ja が黙ったときだけ stop() して付け直す。仮説を捨てる abort() は回復に使わない。
+ *
+ * 制約:
+ * - desktop ja は continuous:true で話しているあいだ暫定を流す。iOS は continuous:false。
+ * - 英語 desktop の stall はこれまで通り abort。
+ * - 認識の前に MediaRecorder がマイクを取る（desktop）。ここでは getUserMedia しない。
  */
 
 class Transcriber {
@@ -117,206 +113,232 @@ class Transcriber {
     // 日本語は上位が尻切れでも、うしろの候補にモーラが残ることがある。
     this.recognition.maxAlternatives = this.language === 'ja-JP' ? 5 : 3;
 
-    this.recognition.onstart = () => {
-      this._engineRunning = true;
-      this._sessionStartedAt = Date.now();
-      this._heardSpeechAt = 0;
-      this._speechEndedAt = 0;
-      this._gotHypothesis = false;
-      this._jaFastRestart = false;
-      this._jaUnwedgeSent = false;
-      this._resumeWhenVisible = false;
-      this._clearJaSpeechEndFlush();
-      this._armJaLiveWatch();
-    };
+    this.recognition.onstart = () => this._onRecognitionStart();
+    this.recognition.onspeechstart = () => this._onSpeechStart();
+    this.recognition.onspeechend = () => this._onSpeechEnd();
+    this.recognition.onresult = (event) => this._ingestResult(event);
+    this.recognition.onerror = (event) => this._onRecognitionError(event);
+    this.recognition.onend = () => this._onRecognitionEnd();
+  }
 
-    // クラウド結果より先に「音は拾った」が来る。この直後に暫定が無いなら、無視されていないか見る。
-    this.recognition.onspeechstart = () => {
-      this._heardSpeechAt = Date.now();
-    };
+  /**
+   * セッションが動き始めた。仮説ウォッチはここから。
+   * @private
+   */
+  _onRecognitionStart() {
+    this._engineRunning = true;
+    this._sessionStartedAt = Date.now();
+    this._heardSpeechAt = 0;
+    this._speechEndedAt = 0;
+    this._gotHypothesis = false;
+    this._jaFastRestart = false;
+    this._jaUnwedgeSent = false;
+    this._resumeWhenVisible = false;
+    this._clearJaSpeechEndFlush();
+    this._armJaLiveWatch();
+  }
 
-    // 仮説が speechend より後に届く。ここで abort しない。
-    // 結果が jaStaleStopMs 来なければ stop() して付け直す。900ms では切らない。
-    this.recognition.onspeechend = () => {
-      this._speechEndedAt = Date.now();
-      this._armJaSpeechEndFlush();
-    };
+  /**
+   * クラウド結果より先に「音は拾った」が来る。
+   * @private
+   */
+  _onSpeechStart() {
+    this._heardSpeechAt = Date.now();
+  }
 
-    // 結果受信ハンドラ
-    this.recognition.onresult = (event) => {
-      this.retryCount = 0;
-      this._contentionRestarts = 0;
-      this._captureErrorNotified = false;
-      this._lastResultAt = Date.now();
+  /**
+   * 仮説は speechend より後に届くことがある。ここでは止めない。
+   * 黙った desktop ja は jaStaleStopMs 後に stop() する。900ms では切らない。
+   * @private
+   */
+  _onSpeechEnd() {
+    this._speechEndedAt = Date.now();
+    this._armJaSpeechEndFlush();
+  }
 
-      let currentInterim = '';
-      let currentFinal = '';
+  /**
+   * 結果を確定バッファへ取り込み、字幕を描く。
+   * @param {SpeechRecognitionEvent} event
+   * @private
+   */
+  _ingestResult(event) {
+    this.retryCount = 0;
+    this._contentionRestarts = 0;
+    this._captureErrorNotified = false;
+    this._lastResultAt = Date.now();
 
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        const text = Transcriber.pickTranscript(result, this.language);
-        if (result.isFinal) {
-          currentFinal += text;
-        } else {
-          currentInterim += text;
-        }
+    let currentInterim = '';
+    let currentFinal = '';
+
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const result = event.results[i];
+      const text = Transcriber.pickTranscript(result, this.language);
+      if (result.isFinal) {
+        currentFinal += text;
+      } else {
+        currentInterim += text;
       }
+    }
 
-      const previousInterim = this.interimTranscript;
-      const superseded = Transcriber.keepSupersededInterim(
+    const previousInterim = this.interimTranscript;
+    const superseded = Transcriber.keepSupersededInterim(
+      this.language,
+      previousInterim,
+      currentFinal,
+      currentInterim
+    );
+    if (superseded) {
+      const beforeSuper = this.finalTranscript;
+      this._appendFinal(superseded);
+      if (this.finalTranscript !== beforeSuper) this._lastFromInterim = true;
+    }
+    const before = this.finalTranscript;
+    if ((currentFinal || '').trim()) this._appendFinal(currentFinal);
+    if (this.finalTranscript === before) {
+      const salvaged = Transcriber.salvageWipedInterim(
         this.language,
         previousInterim,
-        currentFinal,
+        '',
         currentInterim
       );
-      if (superseded) {
-        const beforeSuper = this.finalTranscript;
-        this._appendFinal(superseded);
-        if (this.finalTranscript !== beforeSuper) this._lastFromInterim = true;
+      if (salvaged) {
+        this._appendFinal(salvaged);
+        if (this.finalTranscript !== before) this._lastFromInterim = true;
       }
-      const before = this.finalTranscript;
-      if ((currentFinal || '').trim()) this._appendFinal(currentFinal);
-      if (this.finalTranscript === before) {
-        const salvaged = Transcriber.salvageWipedInterim(
-          this.language,
-          previousInterim,
-          '',
-          currentInterim
-        );
-        if (salvaged) {
-          this._appendFinal(salvaged);
-          if (this.finalTranscript !== before) this._lastFromInterim = true;
-        }
-      }
-      this.interimTranscript = currentInterim;
-      if (this._speechEndedAt && this._lastResultAt >= this._speechEndedAt) {
-        this._clearJaSpeechEndFlush();
-      }
+    }
+    this.interimTranscript = currentInterim;
+    if (this._speechEndedAt && this._lastResultAt >= this._speechEndedAt) {
+      this._clearJaSpeechEndFlush();
+    }
 
-      if (this.onResult) {
-        this.onResult(this.finalTranscript, this.interimTranscript);
+    if (this.onResult) {
+      this.onResult(this.finalTranscript, this.interimTranscript);
+    }
+
+    if ((this.finalTranscript || this.interimTranscript || '').trim()) {
+      this._gotHypothesis = true;
+      this._clearJaHungWatch();
+    } else if (this._engineRunning) {
+      this._armJaLiveWatch();
+    }
+
+    // onend が先で、仮説が遅れて届いた。待っていた再起動を短くする。
+    if (
+      this._gotHypothesis &&
+      this._isDesktopJa() &&
+      !this._engineRunning &&
+      this.shouldRestart &&
+      this.isListening
+    ) {
+      this._clearRestartTimer();
+      this._scheduleRestart(Transcriber.restartDelay('end', this._isIOS, this.language));
+    }
+  }
+
+  /**
+   * @param {SpeechRecognitionErrorEvent} event
+   * @private
+   */
+  _onRecognitionError(event) {
+    const err = event.error || 'error';
+    console.warn('音声認識イベントエラー:', err);
+    this._commitPendingInterim();
+
+    // 小さい声は no-speech でセッションが切れる。暫定を残してすぐ付け直す。
+    if (err === 'no-speech') {
+      this._engineRunning = false;
+      if (this._deferWhileHidden()) return;
+      if (this.shouldRestart && this.isListening) {
+        this._scheduleRestart(this._restartDelayFor('no-speech'));
       }
+      return;
+    }
 
-      if ((this.finalTranscript || this.interimTranscript || '').trim()) {
-        this._gotHypothesis = true;
-        this._clearJaHungWatch();
-      } else if (this._engineRunning) {
-        this._armJaLiveWatch();
-      }
-
-      // onend が先で、仮説が遅れて届いた。待っていた再起動を短くする。
-      if (
-        this._gotHypothesis &&
-        this.language === 'ja-JP' &&
-        !this._isIOS &&
-        !this._engineRunning &&
-        this.shouldRestart &&
-        this.isListening
-      ) {
-        this._clearRestartTimer();
-        this._scheduleRestart(Transcriber.restartDelay('end', this._isIOS, this.language));
-      }
-    };
-
-    // エラーハンドラ
-    this.recognition.onerror = (event) => {
-      const err = event.error || 'error';
-      console.warn('音声認識イベントエラー:', err);
-      this._commitPendingInterim();
-
-      // 小さい声は no-speech でセッションが切れる。暫定を残してすぐ付け直す。
-      if (err === 'no-speech') {
-        this._engineRunning = false;
-        if (this._deferWhileHidden()) return;
-        if (this.shouldRestart && this.isListening) {
-          this._scheduleRestart(this._restartDelayFor('no-speech'));
-        }
-        return;
-      }
-
-      // desktop Chromium は MediaRecorder の getUserMedia にマイクを取られると
-      // aborted だけで黙って死ぬ（onend が来ないことがある）。録音中なら作り直す。
-      // iOS は onend の再生成に任せ、ここは触らない。
-      if (err === 'aborted') {
-        this._engineRunning = false;
-        const intentional = this._intentionalAbort;
-        this._intentionalAbort = false;
-        if (this._deferWhileHidden()) return;
-        if (!this._isIOS && this.shouldRestart && this.isListening) {
-          if (!intentional) {
-            this._contentionRestarts++;
-            this._restartNotBefore = Date.now() + 280;
-            if (this._contentionRestarts > this.maxRetries) {
-              this.stop();
-              if (this.onError) {
-                this.onError('音声認識を継続できません。もう一度録音を開始してください。');
-              }
-              return;
+    // desktop Chromium は MediaRecorder の getUserMedia にマイクを取られると
+    // aborted だけで黙って死ぬ（onend が来ないことがある）。録音中なら作り直す。
+    // iOS は onend の再生成に任せ、ここは触らない。
+    if (err === 'aborted') {
+      this._engineRunning = false;
+      const intentional = this._intentionalAbort;
+      this._intentionalAbort = false;
+      if (this._deferWhileHidden()) return;
+      if (!this._isIOS && this.shouldRestart && this.isListening) {
+        if (!intentional) {
+          this._contentionRestarts++;
+          this._restartNotBefore = Date.now() + 280;
+          if (this._contentionRestarts > this.maxRetries) {
+            this.stop();
+            if (this.onError) {
+              this.onError('音声認識を継続できません。もう一度録音を開始してください。');
             }
-          }
-          const jaWaiting = this.language === 'ja-JP' && !this._isIOS && !this._gotHypothesis
-            && (intentional || this._speechEndedAt > 0);
-          if (!jaWaiting) this._jaFastRestart = false;
-          this._scheduleRestart(jaWaiting ? this._restartDelayFor('end') : (intentional ? 40 : 300));
-        }
-        return;
-      }
-
-      if (err === 'audio-capture') {
-        this._engineRunning = false;
-        // 画面ロックはマイクを奪う。stop() すると復帰できなくなるので、録音セッション中は殺さない。
-        if (this._deferWhileHidden()) return;
-        if (this.shouldRestart && this.isListening) {
-          this.retryCount++;
-          if (this.retryCount <= this.maxRetries) {
-            this._scheduleRestart(300);
             return;
           }
-          this._resumeWhenVisible = true;
-          if (!this._captureErrorNotified) {
-            this._captureErrorNotified = true;
-            if (this.onError) this.onError('音声認識が中断されました。録音は継続しています。');
-          }
-          return;
         }
-        if (this.onError) this.onError('マイクにアクセスできません。');
-        this.stop();
-        return;
+        const jaWaiting = this._isDesktopJa() && !this._gotHypothesis
+          && (intentional || this._speechEndedAt > 0);
+        if (!jaWaiting) this._jaFastRestart = false;
+        this._scheduleRestart(jaWaiting ? this._restartDelayFor('end') : (intentional ? 40 : 300));
       }
-      if (err === 'not-allowed') {
-        this._engineRunning = false;
-        if (this._deferWhileHidden()) return;
-        if (this.shouldRestart && this.isListening && this._engineWasStarted) {
-          this._resumeWhenVisible = true;
-          return;
-        }
-        if (this.onError) this.onError('マイクの使用が許可されていません。');
-        this.stop();
-        return;
-      }
-      if (this.shouldRestart) this._scheduleRestart();
-    };
+      return;
+    }
 
-    // 終了ハンドラ。iOS スタンドアロンでは発話ごとに終わるので、ここで認識を作り直す。
-    // 確定前の暫定はここで残す。再起動の隙間で早口の続きが消えるのを防ぐ。
-    this.recognition.onend = () => {
+    if (err === 'audio-capture') {
       this._engineRunning = false;
-      this._intentionalAbort = false;
-      this._jaUnwedgeSent = false;
-      this._clearJaHungWatch();
-      this._clearJaSpeechEndFlush();
-      this._commitPendingInterim();
-      if (this._hold || document.visibilityState === 'hidden') {
-        if (this.shouldRestart && this.isListening) this._resumeWhenVisible = true;
+      // 画面ロックはマイクを奪う。stop() すると復帰できなくなるので、録音セッション中は殺さない。
+      if (this._deferWhileHidden()) return;
+      if (this.shouldRestart && this.isListening) {
+        this.retryCount++;
+        if (this.retryCount <= this.maxRetries) {
+          this._scheduleRestart(300);
+          return;
+        }
+        this._resumeWhenVisible = true;
+        if (!this._captureErrorNotified) {
+          this._captureErrorNotified = true;
+          if (this.onError) this.onError('音声認識が中断されました。録音は継続しています。');
+        }
         return;
       }
-      if (this.shouldRestart && this.isListening) {
-        this._scheduleRestart(this._restartDelayFor('end'));
-      } else {
-        this.isListening = false;
-        if (this.onEnd) this.onEnd();
+      if (this.onError) this.onError('マイクにアクセスできません。');
+      this.stop();
+      return;
+    }
+    if (err === 'not-allowed') {
+      this._engineRunning = false;
+      if (this._deferWhileHidden()) return;
+      if (this.shouldRestart && this.isListening && this._engineWasStarted) {
+        this._resumeWhenVisible = true;
+        return;
       }
-    };
+      if (this.onError) this.onError('マイクの使用が許可されていません。');
+      this.stop();
+      return;
+    }
+    if (this.shouldRestart) this._scheduleRestart();
+  }
+
+  /**
+   * iOS は発話ごとに終わるので、ここで認識を作り直す。
+   * 確定前の暫定は残す。再起動の隙間で早口の続きが消えるのを防ぐ。
+   * @private
+   */
+  _onRecognitionEnd() {
+    this._engineRunning = false;
+    this._intentionalAbort = false;
+    this._jaUnwedgeSent = false;
+    this._clearJaHungWatch();
+    this._clearJaSpeechEndFlush();
+    this._commitPendingInterim();
+    if (this._hold || document.visibilityState === 'hidden') {
+      if (this.shouldRestart && this.isListening) this._resumeWhenVisible = true;
+      return;
+    }
+    if (this.shouldRestart && this.isListening) {
+      this._scheduleRestart(this._restartDelayFor('end'));
+    } else {
+      this.isListening = false;
+      if (this.onEnd) this.onEnd();
+    }
   }
 
   /**
@@ -326,6 +348,15 @@ class Transcriber {
    */
   get startBeforeRecorder() {
     return this._isIOS;
+  }
+
+  /**
+   * desktop Chrome の ja-JP。回復は stop()。iOS と英語は別経路。
+   * @returns {boolean}
+   * @private
+   */
+  _isDesktopJa() {
+    return this.language === 'ja-JP' && !this._isIOS;
   }
 
   /**
@@ -535,7 +566,7 @@ class Transcriber {
     if (reason !== 'stall') return false;
     // 仮説が無い desktop ja は切らない。2.5 秒の abort は音声を捨てる。
     // 仮説のあと結果が止まったときだけ stop() する。英語はこれまで通り abort。
-    if (this.language === 'ja-JP' && !this._isIOS) {
+    if (this._isDesktopJa()) {
       const sinceSpeechEnd = this._speechEndedAt ? now - this._speechEndedAt : 0;
       const action = Transcriber.jaStaleRecovery({
         language: this.language,
@@ -655,6 +686,10 @@ class Transcriber {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // desktop ja の回復。stop() は結果を求める。abort() は仮説を捨てるので使わない。
+  // -------------------------------------------------------------------------
+
   /**
    * 仮説がまだ無い desktop ja だけ、長い無応答のあと stop() する。
    * abort() は結果を返さない。stop() はここまでの音声で結果を求める。
@@ -763,7 +798,7 @@ class Transcriber {
   _unwedgeJaSession() {
     if (this._jaUnwedgeSent) return false;
     if (!this.shouldRestart || !this.isListening || !this._engineRunning) return false;
-    if (this._isIOS || this.language !== 'ja-JP' || !this._gotHypothesis) return false;
+    if (!this._isDesktopJa() || !this._gotHypothesis) return false;
     this._jaUnwedgeSent = true;
     this._jaFastRestart = true;
     this._intentionalAbort = true;
@@ -779,6 +814,10 @@ class Transcriber {
     }
     return true;
   }
+
+  // -------------------------------------------------------------------------
+  // 言語ポリシー。desktop ja の回復は stop()。speechend の abort は戻さない。
+  // -------------------------------------------------------------------------
 
   /**
    * desktop ja-JP のレベル監視。英語と iOS は v57 と同じしきい値。
@@ -951,16 +990,6 @@ class Transcriber {
       && !(lastResultAt >= speechEndedAt);
     if (waiting) return Transcriber.jaResultGraceMs;
     return Transcriber.restartDelay(kind, isIOS, language);
-  }
-
-  /**
-   * v60 は speechend の 900ms 後に abort していた。仮説が落ちるので、もう付け直さない。
-   * @param {{language: string, ios: boolean, msSinceResult: number, hasInterim: boolean}} state
-   * @returns {boolean}
-   */
-  static shouldRecoverHungRecognition(state) {
-    void state;
-    return false;
   }
 
   /**
@@ -1203,6 +1232,10 @@ class Transcriber {
       .replace(/[ \t]{2,}/g, ' ')
       .replace(/\s+([,.!?])/g, '$1');
   }
+
+  // -------------------------------------------------------------------------
+  // 結果の確定。フィラーは残す。空になった暫定は残す。重なったモーラは一度だけ。
+  // -------------------------------------------------------------------------
 
   /**
    * @param {string} raw
