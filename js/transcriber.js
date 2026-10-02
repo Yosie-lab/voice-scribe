@@ -3,7 +3,7 @@
  *
  * 担当を分ける:
  * - セッション: start / stop / continue / 再起動。マイクは開かない。
- * - 結果の確定: 候補選択、暫定の保全、重なり結合、描画コールバック。
+ * - 結果の確定: 候補選択、暫定の保全、重なり結合、描画コールバック。同じ区間は二度入れない。
  * - 回復: desktop ja が黙ったときだけ stop() して付け直す。仮説を捨てる abort() は回復に使わない。
  *
  * 制約:
@@ -32,6 +32,7 @@ class Transcriber {
     this._lastChunk = '';
     this._lastChunkAt = 0;
     this._lastFromInterim = false;
+    this._finalCursor = 0;
     this._lastResultAt = 0;
     this._heardSpeechAt = 0;
     this._lastNudgeAt = 0;
@@ -83,6 +84,7 @@ class Transcriber {
   init() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
+    this._finalCursor = 0;
     this._clearJaHungWatch();
     this._clearJaSpeechEndFlush();
 
@@ -169,12 +171,18 @@ class Transcriber {
 
     let currentInterim = '';
     let currentFinal = '';
+    const results = event.results || [];
+    const resultIndex = typeof event.resultIndex === 'number' ? event.resultIndex : 0;
+    const fromIndex = Math.max(resultIndex, this._finalCursor || 0);
 
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const result = event.results[i];
+    for (let i = fromIndex; i < results.length; i++) {
+      const result = results[i];
       const text = Transcriber.pickTranscript(result, this.language);
       if (result.isFinal) {
-        currentFinal += text;
+        const folded = this._normalize(text);
+        // 同じイベントの最終が同じ文面で二枚来ても、一枚だけ足す。
+        if (folded && folded !== this._normalize(currentFinal)) currentFinal += text;
+        this._finalCursor = i + 1;
       } else {
         currentInterim += text;
       }
@@ -206,7 +214,11 @@ class Transcriber {
         if (this.finalTranscript !== before) this._lastFromInterim = true;
       }
     }
-    this.interimTranscript = currentInterim;
+    this.interimTranscript = Transcriber.stripEchoInterim(
+      this.language,
+      this.finalTranscript,
+      currentInterim
+    );
     if (this._speechEndedAt && this._lastResultAt >= this._speechEndedAt) {
       this._clearJaSpeechEndFlush();
     }
@@ -1164,12 +1176,14 @@ class Transcriber {
     const a = (left || '').replace(/[。、！？!?\s\u3000]+$/g, '');
     const b = (right || '').replace(/^[。、！？!?\s\u3000]+/, '');
     if (!a || !b) return '';
-    const max = Math.min(a.length, b.length, 24);
+    const fa = Transcriber._foldJaDigits(a);
+    const fb = Transcriber._foldJaDigits(b);
+    const max = Math.min(fa.length, fb.length, 24);
     for (let len = max; len >= 4; len--) {
-      if (a.slice(-len) === b.slice(0, len)) return a.slice(0, -len) + b;
+      if (fa.slice(-len) === fb.slice(0, len)) return a.slice(0, -len) + b;
     }
     // 全文が「えー」「えっと」だけのとき、次が同じ頭なら繰り返さず伸ばす。1文字は「あ」+「明日」になるので足さない。
-    if (a.length >= 2 && a.length < 4 && b.startsWith(a)) return b;
+    if (fa.length >= 2 && fa.length < 4 && fb.startsWith(fa)) return b;
     return '';
   }
 
@@ -1193,7 +1207,8 @@ class Transcriber {
 
   /**
    * 日本語の暫定が、別発話の結果に置き換わって isFinal にならなかったとき、前の暫定を残す。
-   * 伸び・縮み（どちらかがもう片方の先頭）は同じ仮説なので残さない。空への置き換えは salvage に任せる。
+   * 伸び・縮み、頭への補足、同じ区間の書き換え（今日 / きょう）は同じ仮説なので残さない。
+   * 暫定の方が長く尻が同じときは、フィラーを残すため暫定を返す。空への置き換えは salvage に任せる。
    * @param {string} language
    * @param {string} previousInterim
    * @param {string} currentFinal
@@ -1206,11 +1221,112 @@ class Transcriber {
     if (pending.length < 2) return '';
     const next = `${currentFinal || ''}${currentInterim || ''}`.trim();
     if (!next) return '';
-    const foldPending = Transcriber._foldJaDigits(pending);
-    const foldNext = Transcriber._foldJaDigits(next);
+    const foldPending = Transcriber._foldJaDigits(Transcriber._plain(pending));
+    const foldNext = Transcriber._foldJaDigits(Transcriber._plain(next));
     if (!foldPending || !foldNext) return '';
     if (foldNext.startsWith(foldPending) || foldPending.startsWith(foldNext)) return '';
+    if (foldNext.length > foldPending.length && foldNext.endsWith(foldPending)) return '';
+    if (foldPending.length > foldNext.length && foldPending.endsWith(foldNext)) return pending;
+    if (Transcriber._sameJaRewrite(foldPending, foldNext)) return '';
     return pending;
+  }
+
+  /**
+   * 句読点と空白を除いた比較用文字列。
+   * @param {string} text
+   * @returns {string}
+   */
+  static _plain(text) {
+    return (text || '').replace(/[\s\u3000。、！？!?.,]+/g, '');
+  }
+
+  /**
+   * 連続する共通部分。今日 / きょう のように頭が違う同じ発話を、別文と分ける。
+   * @param {string} a
+   * @param {string} b
+   * @returns {number}
+   */
+  static _lcsLen(a, b) {
+    const n = a ? a.length : 0;
+    const m = b ? b.length : 0;
+    if (!n || !m) return 0;
+    let prev = new Array(m + 1).fill(0);
+    let best = 0;
+    for (let i = 1; i <= n; i++) {
+      const cur = new Array(m + 1).fill(0);
+      const ai = a[i - 1];
+      for (let j = 1; j <= m; j++) {
+        if (ai === b[j - 1]) {
+          cur[j] = prev[j - 1] + 1;
+          if (cur[j] > best) best = cur[j];
+        }
+      }
+      prev = cur;
+    }
+    return best;
+  }
+
+  /**
+   * @param {string} foldPending
+   * @param {string} foldNext
+   * @returns {boolean}
+   */
+  static _sameJaRewrite(foldPending, foldNext) {
+    const shorter = Math.min(foldPending.length, foldNext.length);
+    if (shorter < 4) return false;
+    const shared = Transcriber._lcsLen(foldPending, foldNext);
+    return shared >= 4 && shared >= shorter * 0.65;
+  }
+
+  /**
+   * 確定の尻を繰り返す暫定は、画面にも次の確定にも残さない。
+   * 英語は暫定が確定と完全に同じときだけ外す。
+   * @param {string} language
+   * @param {string} finalText
+   * @param {string} interim
+   * @returns {string}
+   */
+  static stripEchoInterim(language, finalText, interim) {
+    const raw = interim || '';
+    const pending = raw.trim();
+    if (!pending) return '';
+    const committed = (finalText || '').trim();
+    if (!committed) return raw;
+
+    if (language !== 'ja-JP') {
+      const c = committed.replace(/\s+/g, ' ').trim();
+      const i = pending.replace(/\s+/g, ' ').trim();
+      if (c === i) return '';
+      return raw;
+    }
+
+    const foldC = Transcriber._foldJaDigits(Transcriber._plain(committed));
+    const foldI = Transcriber._foldJaDigits(Transcriber._plain(pending));
+    if (!foldI) return '';
+    if (foldC.endsWith(foldI)) return '';
+    if (foldI.startsWith(foldC)) return Transcriber._slicePlain(pending, foldC.length);
+    const max = Math.min(foldC.length, foldI.length, 24);
+    for (let len = max; len >= 4; len--) {
+      if (foldC.slice(-len) === foldI.slice(0, len)) return Transcriber._slicePlain(pending, len);
+    }
+    return raw;
+  }
+
+  /**
+   * 句読点を数えずに plainLen 文字進めて、残りを返す。
+   * @param {string} raw
+   * @param {number} plainLen
+   * @returns {string}
+   */
+  static _slicePlain(raw, plainLen) {
+    const trimmed = (raw || '').trim();
+    let counted = 0;
+    let i = 0;
+    while (i < trimmed.length && counted < plainLen) {
+      if (!/[\s\u3000。、！？!?.,]/.test(trimmed[i])) counted += 1;
+      i += 1;
+    }
+    return trimmed.slice(i).replace(/^[\s\u3000。、！？!?.,]+/, '');
   }
 
   /**
@@ -1278,6 +1394,18 @@ class Transcriber {
       return;
     }
 
+    // 日本語の確定の尻に既にある区間（最終の再送、3 と 三）は足さない。言い直しは merge 窓のあと。
+    const committedNorm = this._normalize(this.finalTranscript);
+    if (
+      this.language === 'ja-JP' &&
+      nextNorm.length >= 4 &&
+      committedNorm.endsWith(nextNorm) &&
+      now - this._lastChunkAt < mergeMs
+    ) {
+      this._lastFromInterim = false;
+      return;
+    }
+
     this.finalTranscript = this._joinTranscript(this.finalTranscript, next);
     this._lastChunk = next;
     this._lastChunkAt = now;
@@ -1304,7 +1432,9 @@ class Transcriber {
    * @private
    */
   _normalize(text) {
-    return (text || '').replace(/[\s\u3000。、！？!?.,]+/g, '');
+    const plain = (text || '').replace(/[\s\u3000。、！？!?.,]+/g, '');
+    if (this.language === 'ja-JP') return Transcriber._foldJaDigits(plain);
+    return plain;
   }
 
   /**
