@@ -294,6 +294,38 @@ assert(
   Transcriber.keepSupersededInterim('ja-JP', '三時から出ます', '', '3時から出ますね') === '',
   'digit fold does not split one hypothesis'
 );
+assert(
+  Transcriber.keepSupersededInterim('ja-JP', '会議は三時から開始です', '', '明日の会議は三時から開始です') === '',
+  'a prefix added to the same ja span is not a second utterance'
+);
+assert(
+  Transcriber.keepSupersededInterim('ja-JP', '今日はいい天気ですね', '', 'きょうはいい天気ですね') === '',
+  'a kana rewrite of the same ja span is not a second utterance'
+);
+assert(
+  Transcriber.keepSupersededInterim('ja-JP', 'えー今日はいい天気ですね', '', '今日はいい天気ですね') === 'えー今日はいい天気ですね',
+  'a longer interim that still contains the final keeps the filler'
+);
+assert(
+  Transcriber.keepSupersededInterim('ja-JP', '資料を共有してください', '', '内容を確認してください') === '資料を共有してください',
+  'different ja sentences that share an ending are kept'
+);
+assert(
+  Transcriber.stripEchoInterim('ja-JP', '今日はいい天気ですね。', '今日はいい天気ですね') === '',
+  'ja interim that repeats the final is not shown again'
+);
+assert(
+  Transcriber.stripEchoInterim('ja-JP', '今日はいい天気ですね。', '今日はいい天気ですね明日は雨') === '明日は雨',
+  'ja interim keeps only the words after the committed span'
+);
+assert(
+  Transcriber.stripEchoInterim('en-US', 'hello there', 'hello there') === '',
+  'english echo interim is cleared'
+);
+assert(
+  Transcriber.stripEchoInterim('en-US', 'hello', 'there') === 'there',
+  'english continuation interim stays'
+);
 assert(Transcriber.keepSupersededInterim('ja-JP', 'えー', '', '') === '', 'empty replacement stays on salvage');
 assert(Transcriber.keepSupersededInterim('ja-JP', 'あ', '', '明日') === '', 'one-character interim is not a committed utterance');
 assert(Transcriber.keepSupersededInterim('en-US', 'hello there', '', 'goodbye') === '', 'english interim is not force-committed');
@@ -557,10 +589,10 @@ assert(viz.includes('getSpeechPeak'), 'frame peak for short bursts');
 assert(viz.includes('_sampleSpeechPeak'), 'peak is sampled while drawing');
 assert(app.includes('usePeak'), 'desktop ja watch reads the peak');
 assert(app.includes('speechHotFlags'), 'stall does not reuse the gap peak');
-assert(!index.includes('v=63'), 'index cache bust left 63');
-assert(index.includes('v=64'), 'index is v64');
-assert(sw.includes("voicescribe-v64"), 'sw cache name');
-assert(!sw.includes('voicescribe-v63'), 'old sw name gone');
+assert(!index.includes('v=64'), 'index cache bust left 64');
+assert(index.includes('v=65'), 'index is v65');
+assert(sw.includes("voicescribe-v65"), 'sw cache name');
+assert(!sw.includes('voicescribe-v64'), 'old sw name gone');
 const micCalls = (src) => (src.match(/\.getUserMedia\s*\(/g) || []).length;
 const recorderSrc = fs.readFileSync(path.join(root, 'js/recorder.js'), 'utf8');
 assert(micCalls(viz) === 0, 'visualizer does not open a mic');
@@ -682,6 +714,123 @@ const iosStart = startFn.lastIndexOf('this.transcriber.start', recorderAt);
 assert(iosStart !== -1 && iosStart < recorderAt, 'iOS recognition stays before recorder');
 assert(desktopStart > recorderAt, 'desktop recognition stays after recorder');
 assert(startFn.includes('if (!recognitionFirst)'), 'desktop path is gated');
+
+function countSpan(text, span) {
+  const norm = (text || '').replace(/[。、！？!?\s\u3000]/g, '');
+  const needle = (span || '').replace(/[。、！？!?\s\u3000]/g, '');
+  let n = 0;
+  let i = 0;
+  while (needle && (i = norm.indexOf(needle, i)) !== -1) {
+    n += 1;
+    i += needle.length;
+  }
+  return n;
+}
+
+function paintOf(language, events) {
+  const t = new Transcriber();
+  t.language = language;
+  t._isIOS = false;
+  let finalText = '';
+  let interimText = '';
+  t.onResult = (final, interim) => {
+    finalText = final;
+    interimText = interim;
+  };
+  events.forEach((event) => t._ingestResult(event));
+  return { finalText, interimText, shown: `${finalText || ''}${interimText || ''}`, t };
+}
+
+const kanaRewrite = paintOf('ja-JP', [
+  { resultIndex: 0, results: [hypothesis('今日はいい天気ですね', false)] },
+  { resultIndex: 0, results: [hypothesis('きょうはいい天気ですね', false)] },
+  { resultIndex: 0, results: [hypothesis('今日はいい天気ですね', true)] }
+]);
+assert(countSpan(kanaRewrite.shown, '今日はいい天気ですね') === 1, 'kana rewrite commits the span once');
+assert(!kanaRewrite.shown.includes('きょう'), 'the rewritten interim is not kept beside the final');
+
+const prefixGrowth = paintOf('ja-JP', [
+  { resultIndex: 0, results: [hypothesis('会議は三時から開始です', false)] },
+  { resultIndex: 0, results: [hypothesis('明日の会議は三時から開始です', false)] },
+  { resultIndex: 0, results: [hypothesis('明日の会議は三時から開始です', true)] }
+]);
+assert(countSpan(prefixGrowth.shown, '会議は三時から開始です') === 1, 'prefix growth commits the span once');
+assert(prefixGrowth.interimText === '', 'prefix growth final clears the interim');
+
+const echoInterim = paintOf('ja-JP', [
+  { resultIndex: 0, results: [hypothesis('今日はいい天気ですね', true), hypothesis('今日はいい天気ですね', false)] }
+]);
+assert(echoInterim.interimText === '', 'echo interim is not painted beside the final');
+assert(countSpan(echoInterim.shown, '今日はいい天気ですね') === 1, 'echo interim does not double the caption');
+
+const supersetInterim = paintOf('ja-JP', [
+  { resultIndex: 0, results: [hypothesis('今日はいい天気ですね', true), hypothesis('今日はいい天気ですね明日は雨', false)] }
+]);
+assert(countSpan(supersetInterim.shown, '今日はいい天気ですね') === 1, 'cumulative interim does not repeat the final');
+assert(supersetInterim.interimText === '明日は雨', 'cumulative interim keeps the new tail');
+
+const fillerFinal = paintOf('ja-JP', [
+  { resultIndex: 0, results: [hypothesis('えー今日はいい天気ですね', false)] },
+  { resultIndex: 0, results: [hypothesis('今日はいい天気ですね', true)] }
+]);
+assert(fillerFinal.shown.includes('えー'), 'filler stays when the final drops it');
+assert(countSpan(fillerFinal.shown, '今日はいい天気ですね') === 1, 'cleaned final does not repeat the filler interim');
+
+const digitFinal = paintOf('ja-JP', [
+  { resultIndex: 0, results: [hypothesis('明日の会議は三時から開始で', false)] }
+]);
+digitFinal.t._commitPendingInterim();
+digitFinal.t._ingestResult({
+  resultIndex: 0,
+  results: [hypothesis('明日の会議は3時から開始で資料は事前に共有してください', true)]
+});
+const digitShown = `${digitFinal.t.finalTranscript || ''}${digitFinal.t.interimTranscript || ''}`;
+assert(
+  countSpan(digitShown.replace(/3/g, '三'), '明日の会議は三時から開始で') === 1,
+  'a 3/三 final does not repeat the committed interim'
+);
+assert(digitShown.includes('資料は事前に共有してください'), 'the longer digit final is kept');
+
+const resent = paintOf('ja-JP', [
+  { resultIndex: 0, results: [hypothesis('今日はいい天気ですね', true)] },
+  { resultIndex: 1, results: [hypothesis('今日はいい天気ですね', true), hypothesis('明日は雨です', true)] }
+]);
+resent.t._lastChunkAt = Date.now() - 5000;
+resent.t._ingestResult({
+  resultIndex: 0,
+  results: [
+    hypothesis('今日はいい天気ですね', true),
+    hypothesis('明日は雨です', true),
+    hypothesis('資料を送ります', false)
+  ]
+});
+const resentShown = `${resent.t.finalTranscript || ''}${resent.t.interimTranscript || ''}`;
+assert(countSpan(resentShown, '今日はいい天気ですね') === 1, 'resultIndex 0 does not reappend old ja finals');
+assert(countSpan(resentShown, '明日は雨です') === 1, 'resultIndex 0 does not reappend the second ja final');
+assert(resent.t.interimTranscript === '資料を送ります', 'a new interim after resent finals stays live');
+
+const enResent = paintOf('en-US', [
+  { resultIndex: 0, results: [hypothesis('hello there', true)] },
+  { resultIndex: 1, results: [hypothesis('hello there', true), hypothesis('how are you', true)] }
+]);
+enResent.t._lastChunkAt = Date.now() - 5000;
+enResent.t._ingestResult({
+  resultIndex: 0,
+  results: [
+    hypothesis('hello there', true),
+    hypothesis('how are you', true),
+    hypothesis('today', false)
+  ]
+});
+assert(enResent.t.finalTranscript === 'hello there how are you', 'english does not reappend old finals');
+assert(enResent.t.interimTranscript === 'today', 'english interim after resent finals stays');
+
+const distinct = paintOf('ja-JP', [
+  { resultIndex: 0, results: [hypothesis('今日はいい天気ですね', false)] },
+  { resultIndex: 0, results: [hypothesis('明日の会議は三時から', false)] }
+]);
+assert(distinct.finalText.includes('今日はいい天気ですね'), 'a different ja utterance is still committed');
+assert(distinct.interimText === '明日の会議は三時から', 'the new ja interim stays live');
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
