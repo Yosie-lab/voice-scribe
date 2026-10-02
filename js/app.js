@@ -540,8 +540,8 @@ class VoiceScribeApp {
       this._stallHotMs = 0;
       return;
     }
-    // 暫定が流れているあいだは nudge 側が切らない。結果も speechstart も無いときだけ付け直す。
-    // ja の stall は英語と同じ窓。ピークが部屋ノイズでも、動いている認識は切らない。
+    // 英語だけ、結果も speechstart も無い長い発話で付け直す。
+    // desktop ja は nudge('stall') が abort しない。2.5 秒で切ると仮説が捨てられる。
     if (this._stallHotMs >= profile.stallMs && this.transcriber.msSinceResult() >= profile.resultMs) {
       this.transcriber.nudge('stall');
       this._speechHotMs = 0;
