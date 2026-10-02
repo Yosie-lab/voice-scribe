@@ -69,6 +69,7 @@ class AudioVisualizer {
       this.speechAnalyser.smoothingTimeConstant = 0.45;
       this.source.connect(this.speechAnalyser);
       this._levelEma = null;
+      this._peakHold = null;
       this._timeData = null;
 
       const bufferLength = this.analyser.frequencyBinCount;
@@ -88,6 +89,7 @@ class AudioVisualizer {
     if (!this.analyser || !this.ctx) return;
 
     this.animationId = requestAnimationFrame(() => this._draw());
+    this._sampleSpeechPeak();
     this.analyser.getByteFrequencyData(this.dataArray);
 
     const width = this.displayWidth || 300;
@@ -120,11 +122,12 @@ class AudioVisualizer {
   }
 
   /**
-   * 録音ストリームの短時間 RMS（0–1）。認識用マイクとは別グラフ。
-   * 未接続のときは null。
+   * 今の波形窓の RMS。time domain は約 1 フレーム分だけで、
+   * 200ms ごとのポーリングだと「えー」が窓の外に落ちる。
    * @returns {number|null}
+   * @private
    */
-  getSpeechLevel() {
+  _instantRms() {
     const analyser = this.speechAnalyser;
     if (!analyser) return null;
     if (!this._timeData || this._timeData.length !== analyser.fftSize) {
@@ -136,9 +139,40 @@ class AudioVisualizer {
       const v = (this._timeData[i] - 128) / 128;
       sum += v * v;
     }
-    const rms = Math.sqrt(sum / this._timeData.length);
+    return Math.sqrt(sum / this._timeData.length);
+  }
+
+  /**
+   * 描画フレームごとにピークを残す。getUserMedia は増やさない。
+   * @private
+   */
+  _sampleSpeechPeak() {
+    const rms = this._instantRms();
+    if (rms == null) return;
+    this._peakHold = this._peakHold == null ? rms : Math.max(this._peakHold, rms);
+  }
+
+  /**
+   * 録音ストリームの短時間 RMS（0–1）。認識用マイクとは別グラフ。
+   * 未接続のときは null。英語のレベル監視はこちら（EMA）のまま。
+   * @returns {number|null}
+   */
+  getSpeechLevel() {
+    const rms = this._instantRms();
+    if (rms == null) return null;
     this._levelEma = this._levelEma == null ? rms : this._levelEma * 0.55 + rms * 0.45;
     return this._levelEma;
+  }
+
+  /**
+   * 前回読んでからの最大 RMS。desktop ja-JP の短い発話用。読んだあとは捨てる。
+   * @returns {number|null}
+   */
+  getSpeechPeak() {
+    this._sampleSpeechPeak();
+    const peak = this._peakHold;
+    this._peakHold = null;
+    return peak == null ? null : peak;
   }
 
   /**
@@ -210,6 +244,7 @@ class AudioVisualizer {
     this.speechAnalyser = null;
     this._timeData = null;
     this._levelEma = null;
+    this._peakHold = null;
 
     if (this.audioCtx && this.audioCtx.state !== 'closed') {
       try {

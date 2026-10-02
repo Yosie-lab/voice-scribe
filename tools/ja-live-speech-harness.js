@@ -231,7 +231,8 @@ record(
   appendV57('ja-JP', ['えーと今日はいい天気ですね']),
   appendNow('ja-JP', ['えーと今日はいい天気ですね'])
 );
-assert(appendNow('ja-JP', ['えーと今日はいい天気ですね']) === '今日はいい天気ですね。', 'quiet filler');
+assert(appendNow('ja-JP', ['えーと今日はいい天気ですね']) === 'えーと今日はいい天気ですね。', 'quiet filler kept');
+assert(appendV57('ja-JP', ['えーと今日はいい天気ですね']) === '今日はいい天気ですね。', 'v57 deleted えーと');
 
 record(
   'demonstrative kept',
@@ -239,8 +240,8 @@ record(
   appendNow('ja-JP', ['あのー資料は事前に共有してください'])
 );
 assert(
-  appendNow('ja-JP', ['あのー資料は事前に共有してください']) === 'あの資料は事前に共有してください。',
-  'あのー must keep あの'
+  appendNow('ja-JP', ['あのー資料は事前に共有してください']) === 'あのー資料は事前に共有してください。',
+  'あのー stays elongated'
 );
 assert(
   appendV57('ja-JP', ['あのー資料は事前に共有してください']) === '資料は事前に共有してください。',
@@ -254,6 +255,35 @@ record(
 );
 assert(appendNow('en-US', ['um hello', 'there']) === 'hello there', 'english join');
 assert(appendV57('en-US', ['um hello', 'there']) === 'hello there', 'english v57 same');
+
+const fillers = ['えー', 'あの', 'えっと', 'えーと', 'えーっと', 'あのー', 'そのー', 'ええと'];
+fillers.forEach((word) => {
+  assert(appendNow('ja-JP', [word]) === word, `short filler kept: ${word}`);
+});
+assert(appendV57('ja-JP', ['えっと']) === '', 'v57 drops a standalone えっと');
+assert(appendV57('ja-JP', ['あのー']) === '', 'v57 drops a standalone あのー');
+assert(appendNow('ja-JP', ['えっと', 'えっと確認します']) === 'えっと確認します。', 'short final extends');
+assert(
+  appendNow('ja-JP', ['資料を送ります', 'えっと', 'えっと確認します']) === '資料を送ります。えっと確認します。',
+  'filler between phrases is kept once'
+);
+assert(appendNow('ja-JP', ['あ', '明日は晴れです']) === 'あ明日は晴れです。', 'one-mora partial is not merged away');
+assert(appendNow('en-US', ['um']) === '', 'english um still stripped');
+assert(appendNow('en-US', ['uh hello']) === 'hello', 'english uh still stripped');
+
+assert(Transcriber.salvageWipedInterim('ja-JP', 'えー', '', '') === 'えー', 'wiped filler interim kept');
+assert(Transcriber.salvageWipedInterim('ja-JP', 'えっと確認', '', '') === 'えっと確認', 'wiped short phrase kept');
+assert(Transcriber.salvageWipedInterim('ja-JP', 'あ', '', '') === '', 'one-character interim stays a partial');
+assert(Transcriber.salvageWipedInterim('ja-JP', 'えー', '今日は', '') === '', 'real final is not doubled');
+assert(Transcriber.salvageWipedInterim('ja-JP', 'えー', '', 'あの') === '', 'replacement interim wins');
+assert(Transcriber.salvageWipedInterim('en-US', 'um', '', '') === '', 'english wipe stays v58');
+
+const shortFinal = [
+  { transcript: 'えっと', confidence: 0.22 },
+  { transcript: '映画と', confidence: 0.18 }
+];
+assert(Transcriber.pickTranscript(shortFinal, 'ja-JP') === 'えっと', 'low-confidence short final kept');
+record('short filler hypothesis', pickV57(shortFinal), Transcriber.pickTranscript(shortFinal, 'ja-JP'));
 
 const enExtend = [
   { transcript: 'hell', confidence: 0 },
@@ -284,8 +314,10 @@ assert(quietHotBefore === false, 'v57 misses RMS 0.010');
 assert(quietHotAfter === true, 'ja desktop hears RMS 0.010');
 assert(Transcriber.isSpeechHot(quietLevel, enProfile.floor, enProfile) === false, 'english misses 0.010');
 assert(Transcriber.isSpeechHot(0.02, enProfile.floor, enProfile) === hotV57(0.02, 0.012), 'english 0.02 same');
-assert(iosProfile.abs === 0.018 && iosProfile.gapMs === 600, 'iOS profile unchanged');
-assert(enProfile.resultMs === 2500 && enProfile.stallMs === 2000, 'english stall unchanged');
+assert(iosProfile.abs === 0.018 && iosProfile.gapMs === 600 && !iosProfile.usePeak, 'iOS profile unchanged');
+assert(enProfile.resultMs === 2500 && enProfile.stallMs === 2000 && enProfile.gapMs === 600 && !enProfile.usePeak, 'english stall unchanged');
+assert(jaProfile.gapMs === 200 && jaProfile.usePeak === true, 'ja restarts on one short peak');
+assert(jaProfile.stallMs === 1400 && jaProfile.resultMs === 1600, 'ja does not abort a live session sooner');
 
 record(
   'desktop restart ms (no-speech / end)',
@@ -334,11 +366,16 @@ const index = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const sw = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'js/app.js'), 'utf8');
 const transcriberSrc = fs.readFileSync(path.join(root, 'js/transcriber.js'), 'utf8');
-assert(!index.includes('v=57'), 'index cache bust left 57');
-assert(index.includes('v=58'), 'index is v58');
-assert(sw.includes("voicescribe-v58"), 'sw cache name');
-assert(!sw.includes('voicescribe-v57'), 'old sw name gone');
+const viz = fs.readFileSync(path.join(root, 'js/visualizer.js'), 'utf8');
+assert(viz.includes('getSpeechPeak'), 'frame peak for short bursts');
+assert(viz.includes('_sampleSpeechPeak'), 'peak is sampled while drawing');
+assert(app.includes('usePeak'), 'desktop ja watch reads the peak');
+assert(!index.includes('v=58'), 'index cache bust left 58');
+assert(index.includes('v=59'), 'index is v59');
+assert(sw.includes("voicescribe-v59"), 'sw cache name');
+assert(!sw.includes('voicescribe-v58'), 'old sw name gone');
 const micCalls = (src) => (src.match(/\.getUserMedia\s*\(/g) || []).length;
+assert(micCalls(viz) === 0, 'visualizer does not open a mic');
 assert(micCalls(app) === 0, 'app must not open a mic');
 assert(micCalls(transcriberSrc) === 0, 'transcriber must not open a mic');
 assert(micCalls(fs.readFileSync(path.join(root, 'js/recorder.js'), 'utf8')) === 2, 'still one mic open path');
