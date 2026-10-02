@@ -7,6 +7,9 @@
  * 動いている ja-JP は abort しない。Chrome の日本語仮説は英語より遅く、
  * abort はアップロード済みの音声を捨てる。v60 は部屋ノイズの stall だけ外したが、
  * 本発話の stall（2.5 秒）と speechend 後 900ms の abort は残っていた。
+ * v61 は abort を止めた代わりに desktop ja を continuous:false にした。
+ * 単発認識は仮説を発話終了（または無応答の stop）まで溜めるので、話しているあいだ字幕が動かない。
+ * desktop ja は英語と同じ continuous:true。iOS は false のまま。abort は戻さない。
  */
 
 class Transcriber {
@@ -98,8 +101,8 @@ class Transcriber {
 
     this.recognition = new SpeechRecognition();
     // iOS は continuous:true だと確定せずすぐ終わる。false にして onend で作り直す。
-    // desktop ja-JP も同じ。continuous:true のまま speechend で abort すると、
-    // クラウドの確定が届く前に音声が捨てられ、字幕が空のままになる。
+    // desktop ja も false にすると Chrome は単発になり、仮説が発話の終わりまで出ない。
+    // 空字幕の原因は continuous ではなく、speechend / stall の abort。abort はしない。
     this.recognition.continuous = Transcriber.useContinuous(this.language, this._isIOS);
     this.recognition.interimResults = true;
     this.recognition.lang = this.language;
@@ -760,14 +763,15 @@ class Transcriber {
   static jaLiveStopMs = 8000;
 
   /**
-   * iOS と desktop ja は発話ごとに終わらせて onend で付け直す。英語 desktop は continuous。
-   * @param {string} language
+   * iOS だけ発話ごとに終わらせて onend で付け直す。
+   * desktop は ja も en も continuous。ja だけ false にすると単発認識になり、
+   * 暫定が話しているあいだ来ない（確定は発話終了か、仮説が無いときの stop で届く）。
+   * @param {string} _language 呼び出し互換。desktop の continuous は言語で分けない。
    * @param {boolean} ios
    * @returns {boolean}
    */
-  static useContinuous(language, ios) {
-    if (ios) return false;
-    return language !== 'ja-JP';
+  static useContinuous(_language, ios) {
+    return !ios;
   }
 
   /**
