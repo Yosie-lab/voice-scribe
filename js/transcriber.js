@@ -3,7 +3,8 @@
  * Web Speech API (webkitSpeechRecognition) を利用したリアルタイム音声文字起こし。
  * 認識品質の上限は OS / ブラウザ側。認識器自身のマイクは増幅できない。
  * ここでは取りこぼし（無音扱い、再起動の隙間、尻切れ、フィラー削除、短い暫定の破棄）を減らす。
- * desktop の ja-JP は、モーラの尻・短いバーストのレベル・再起動だけを英語より敏感にする。
+ * desktop の ja-JP は、モーラの尻と、死んだ認識の再起動だけを英語より敏感にする。
+ * 動いている認識は部屋ノイズで abort しない。ja-JP の結果は英語より遅く、先に切ると字幕が空になる。
  */
 
 class Transcriber {
@@ -603,23 +604,27 @@ class Transcriber {
 
   /**
    * desktop ja-JP のレベル監視。英語と iOS は v57 と同じしきい値。
+   * ja の低いしきい値とピークは、死んだ認識の gap だけに使う。
+   * 動いている認識の stall は英語と同じ。1.6 秒で abort すると結果が届く前にセッションが消える。
    * @param {string} language
    * @param {boolean} ios
-   * @returns {{floor: number, abs: number, mult: number, gapMs: number, stallMs: number, resultMs: number}}
+   * @returns {{floor: number, abs: number, mult: number, gapMs: number, stallMs: number, resultMs: number, usePeak?: boolean, stallFloor?: number, stallAbs?: number, stallMult?: number}}
    */
   static speechWatchProfile(language, ios) {
     if (language === 'ja-JP' && !ios) {
-      // 初期しきい値は max(0.007, 0.004*2) = 0.008。0.01 前後の小声を拾い、0.008 以下の部屋ノイズは拾わない。
-      // gapMs は死んだ認識を付け直すまでの有音時間。短いフィラーは 400ms 続かないので 1 回のピークで足りる。
-      // 動いている認識を切る stall は v58 のまま（途中で切ると隙間が増える）。
+      // gap の初期しきい値は max(0.007, 0.004*2) = 0.008。死んだ認識を 1 回のピークで付け直す。
+      // stall は max(0.018, 0.012*3.2)。部屋ノイズのピークでは切らない。
       return {
         floor: 0.004,
         abs: 0.007,
         mult: 2,
         gapMs: 200,
-        stallMs: 1400,
-        resultMs: 1600,
-        usePeak: true
+        stallMs: 2000,
+        resultMs: 2500,
+        usePeak: true,
+        stallFloor: 0.012,
+        stallAbs: 0.018,
+        stallMult: 3.2
       };
     }
     return {
@@ -640,6 +645,31 @@ class Transcriber {
    */
   static isSpeechHot(level, floor, profile) {
     return level > Math.max(profile.abs, floor * profile.mult);
+  }
+
+  /**
+   * ピークは死んだ認識の再起動だけに使う。動いている認識を切る判定は EMA と stall しきい値。
+   * stallAbs が無いプロファイル（英語・iOS）は gap と同じレベルを stall にも使う。
+   * @param {{abs: number, mult: number, usePeak?: boolean, stallAbs?: number, stallMult?: number}} profile
+   * @param {number|null} ema
+   * @param {number|null} peak
+   * @param {number} gapFloor
+   * @param {number} stallFloor
+   * @returns {{gap: boolean, stall: boolean}}
+   */
+  static speechHotFlags(profile, ema, peak, gapFloor, stallFloor) {
+    const usePeak = !!(profile && profile.usePeak && typeof peak === 'number' && !Number.isNaN(peak));
+    const gapLevel = usePeak ? peak : ema;
+    const gap = typeof gapLevel === 'number' && !Number.isNaN(gapLevel)
+      && Transcriber.isSpeechHot(gapLevel, gapFloor, profile);
+    const separateStall = !!(profile && profile.stallAbs != null);
+    const stallSpec = separateStall
+      ? { abs: profile.stallAbs, mult: profile.stallMult }
+      : profile;
+    const stallBase = separateStall ? stallFloor : gapFloor;
+    const stall = typeof ema === 'number' && !Number.isNaN(ema)
+      && Transcriber.isSpeechHot(ema, stallBase, stallSpec);
+    return { gap: !!gap, stall: !!stall };
   }
 
   /**
