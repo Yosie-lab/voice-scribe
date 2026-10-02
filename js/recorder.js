@@ -22,6 +22,8 @@ class AudioRecorder {
     // コールバック
     this.onError = null;
     this.onInterrupted = null;
+    this._captureLanguage = '';
+    this._iosCapture = false;
   }
 
   /**
@@ -52,18 +54,22 @@ class AudioRecorder {
   /**
    * 録音用マイク。SpeechRecognition は別キャプチャなので、ここを増幅しても
    * 認識入力そのものには乗らない。共有デバイスの AGC / 抑制だけを強める。
+   * desktop の ja-JP は抑制を弱める（無声モーラが落ちやすい）。英語と iOS は抑制を維持。
    * ideal なので非対応でも getUserMedia は失敗させない。
+   * @param {string} [language]
+   * @param {boolean} [ios]
    * @returns {MediaTrackConstraints}
    */
-  static speechAudioConstraints() {
+  static speechAudioConstraints(language, ios) {
+    const relaxNs = language === 'ja-JP' && !ios;
     return {
       echoCancellation: { ideal: true },
-      noiseSuppression: { ideal: true },
+      noiseSuppression: { ideal: !relaxNs },
       autoGainControl: { ideal: true },
       channelCount: { ideal: 1 },
       sampleRate: { ideal: 48000 },
       googAutoGainControl: true,
-      googNoiseSuppression: true,
+      googNoiseSuppression: !relaxNs,
       googHighpassFilter: true,
       googEchoCancellation: true
     };
@@ -73,8 +79,10 @@ class AudioRecorder {
    * 音声録音を開始
    * @returns {Promise<MediaStream>}
    */
-  async start() {
+  async start(capture) {
     try {
+      this._captureLanguage = capture && capture.language ? capture.language : '';
+      this._iosCapture = !!(capture && capture.ios);
       this._userStop = false;
       this._ensureToken++;
       this.segments = [];
@@ -458,7 +466,9 @@ class AudioRecorder {
    * @private
    */
   async _openMic() {
-    const advanced = { audio: AudioRecorder.speechAudioConstraints() };
+    const advanced = {
+      audio: AudioRecorder.speechAudioConstraints(this._captureLanguage, this._iosCapture)
+    };
     const basic = {
       audio: {
         echoCancellation: true,
@@ -468,13 +478,13 @@ class AudioRecorder {
     };
     try {
       const stream = await navigator.mediaDevices.getUserMedia(advanced);
-      this._tuneSpeechTrack(stream);
+      await this._tuneSpeechTrack(stream);
       return stream;
     } catch (error) {
       const name = error && error.name;
       if (name === 'NotAllowedError' || name === 'NotFoundError' || name === 'NotReadableError') throw error;
       const stream = await navigator.mediaDevices.getUserMedia(basic);
-      this._tuneSpeechTrack(stream);
+      await this._tuneSpeechTrack(stream);
       return stream;
     }
   }
@@ -484,19 +494,38 @@ class AudioRecorder {
    * @param {MediaStream} stream
    * @private
    */
-  _tuneSpeechTrack(stream) {
+  async _tuneSpeechTrack(stream) {
     const track = stream && stream.getAudioTracks()[0];
     if (!track || typeof track.applyConstraints !== 'function') return;
+    const relaxNs = this._captureLanguage === 'ja-JP' && !this._iosCapture;
+    if (relaxNs) {
+      // 認識 start より前に終わらせる。後から制約が変わると desktop の認識が abort される。
+      try {
+        await track.applyConstraints({
+          echoCancellation: { ideal: true },
+          noiseSuppression: false,
+          autoGainControl: { ideal: true },
+          channelCount: { ideal: 1 }
+        });
+      } catch {
+        // 抑制を切れなくても録音と認識は続ける
+      }
+      return;
+    }
     const settings = typeof track.getSettings === 'function' ? track.getSettings() : {};
     const explicitOff = ['autoGainControl', 'noiseSuppression', 'echoCancellation']
       .some((key) => settings[key] === false);
     if (!explicitOff) return;
-    track.applyConstraints({
-      echoCancellation: { ideal: true },
-      noiseSuppression: { ideal: true },
-      autoGainControl: { ideal: true },
-      channelCount: { ideal: 1 }
-    }).catch(() => {});
+    try {
+      await track.applyConstraints({
+        echoCancellation: { ideal: true },
+        noiseSuppression: { ideal: true },
+        autoGainControl: { ideal: true },
+        channelCount: { ideal: 1 }
+      });
+    } catch {
+      // 付け直せなくても録音は続ける
+    }
   }
 
   /**
@@ -531,3 +560,6 @@ class AudioRecorder {
 
 // グローバルエクスポート
 window.AudioRecorder = AudioRecorder;
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = AudioRecorder;
+}

@@ -1,7 +1,9 @@
 /**
  * VoiceScribe — 音声認識（文字起こし）モジュール
  * Web Speech API (webkitSpeechRecognition) を利用したリアルタイム音声文字起こし。
- * 認識品質の上限は OS / ブラウザ側。ここでは取りこぼし（無音扱い、再起動の隙間、尻切れ）を減らす。
+ * 認識品質の上限は OS / ブラウザ側。認識器自身のマイクは増幅できない。
+ * ここでは取りこぼし（無音扱い、再起動の隙間、尻切れ）を減らす。
+ * desktop の ja-JP は、モーラの尻・小声のレベル・再起動だけを英語より敏感にする。
  */
 
 class Transcriber {
@@ -31,6 +33,7 @@ class Transcriber {
     this._restartNotBefore = 0;
     this._isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    this._jaHungTimer = null;
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
@@ -68,6 +71,7 @@ class Transcriber {
   init() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
+    this._clearJaHungWatch();
 
     // 既存インスタンスはハンドラを外してから破棄する（abort の onend で再起動が二重にならない）
     if (this.recognition) {
@@ -75,6 +79,9 @@ class Transcriber {
       old.onresult = null;
       old.onerror = null;
       old.onend = null;
+      old.onspeechstart = null;
+      old.onspeechend = null;
+      old.onstart = null;
       this.recognition = null;
       try {
         old.abort();
@@ -88,8 +95,8 @@ class Transcriber {
     this.recognition.continuous = !this._isIOS;
     this.recognition.interimResults = true;
     this.recognition.lang = this.language;
-    // 早口で上位仮説だけ尻切れになることがある。別案は短く伸ばすときだけ使う。
-    this.recognition.maxAlternatives = 3;
+    // 日本語は上位が尻切れでも、うしろの候補にモーラが残ることがある。
+    this.recognition.maxAlternatives = this.language === 'ja-JP' ? 5 : 3;
 
     this.recognition.onstart = () => {
       this._engineRunning = true;
@@ -102,8 +109,14 @@ class Transcriber {
       this._heardSpeechAt = Date.now();
     };
 
+    // 日本語の continuous は speechend のあと暫定のまま固まることがある。確定を待ってから付け直す。
+    this.recognition.onspeechend = () => {
+      this._armJaHungWatch();
+    };
+
     // 結果受信ハンドラ
     this.recognition.onresult = (event) => {
+      this._clearJaHungWatch();
       this.retryCount = 0;
       this._contentionRestarts = 0;
       this._captureErrorNotified = false;
@@ -114,7 +127,7 @@ class Transcriber {
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
-        const text = Transcriber.pickTranscript(result);
+        const text = Transcriber.pickTranscript(result, this.language);
         if (result.isFinal) {
           currentFinal += text;
         } else {
@@ -141,7 +154,7 @@ class Transcriber {
         this._engineRunning = false;
         if (this._deferWhileHidden()) return;
         if (this.shouldRestart && this.isListening) {
-          this._scheduleRestart(this._isIOS ? 70 : 25);
+          this._scheduleRestart(Transcriber.restartDelay('no-speech', this._isIOS, this.language));
         }
         return;
       }
@@ -304,6 +317,7 @@ class Transcriber {
     this._resumeWhenVisible = false;
     this._intentionalAbort = false;
     this._clearRestartTimer();
+    this._clearJaHungWatch();
     this._commitPendingInterim();
 
     if (this.recognition) {
@@ -428,15 +442,17 @@ class Transcriber {
 
     if (reason !== 'stall') return false;
     if ((this.interimTranscript || '').trim()) return false;
-    if (this._heardSpeechAt && now - this._heardSpeechAt < 2500) return false;
-    if (this._lastResultAt && now - this._lastResultAt < 2500) return false;
+    const stallMs = Transcriber.speechWatchProfile(this.language, this._isIOS).resultMs;
+    if (this._heardSpeechAt && now - this._heardSpeechAt < stallMs) return false;
+    if (this._lastResultAt && now - this._lastResultAt < stallMs) return false;
 
     this._lastNudgeAt = now;
     this._commitPendingInterim();
     this._intentionalAbort = true;
     this._engineRunning = false;
     this._clearRestartTimer();
-    this._scheduleRestart(this._isIOS ? 70 : 30);
+    this._clearJaHungWatch();
+    this._scheduleRestart(Transcriber.restartDelay('stall', this._isIOS, this.language));
     try {
       if (this.recognition) this.recognition.abort();
     } catch {
@@ -453,7 +469,9 @@ class Transcriber {
   _scheduleRestart(delayMs) {
     if (!this.shouldRestart || !this.isListening || this._restartTimer) return;
 
-    const delay = typeof delayMs === 'number' ? delayMs : (this._isIOS ? 90 : 35);
+    const delay = typeof delayMs === 'number'
+      ? delayMs
+      : Transcriber.restartDelay('end', this._isIOS, this.language);
     this._restartTimer = setTimeout(() => {
       this._restartTimer = null;
       this._restartNow();
@@ -528,12 +546,136 @@ class Transcriber {
   }
 
   /**
+   * 日本語 desktop で、speechend 後も暫定が確定しないときだけ付け直す。
+   * 暫定が無いあいだは切らない（連続認識の待ち時間を潰さない）。iOS は onend に任せる。
+   * @private
+   */
+  _armJaHungWatch() {
+    this._clearJaHungWatch();
+    if (this.language !== 'ja-JP' || this._isIOS) return;
+    if (!this.shouldRestart || !this.isListening || !this._engineRunning) return;
+    this._jaHungTimer = setTimeout(() => {
+      this._jaHungTimer = null;
+      if (!this.shouldRestart || !this.isListening || !this._engineRunning) return;
+      const pending = (this.interimTranscript || '').trim();
+      if (!Transcriber.shouldRecoverHungRecognition({
+        language: this.language,
+        ios: this._isIOS,
+        msSinceResult: this.msSinceResult(),
+        hasInterim: !!pending
+      })) return;
+      this._commitPendingInterim();
+      this._intentionalAbort = true;
+      this._engineRunning = false;
+      this._clearRestartTimer();
+      this._scheduleRestart(Transcriber.restartDelay('end', this._isIOS, this.language));
+      try {
+        if (this.recognition) this.recognition.abort();
+      } catch {
+        this._intentionalAbort = false;
+      }
+    }, Transcriber.jaHungWatchMs);
+  }
+
+  /**
+   * @private
+   */
+  _clearJaHungWatch() {
+    if (this._jaHungTimer) {
+      clearTimeout(this._jaHungTimer);
+      this._jaHungTimer = null;
+    }
+  }
+
+  /**
+   * desktop ja-JP のレベル監視。英語と iOS は v57 と同じしきい値。
+   * @param {string} language
+   * @param {boolean} ios
+   * @returns {{floor: number, abs: number, mult: number, gapMs: number, stallMs: number, resultMs: number}}
+   */
+  static speechWatchProfile(language, ios) {
+    if (language === 'ja-JP' && !ios) {
+      // 初期しきい値は max(0.007, 0.004*2) = 0.008。0.01 前後の小声を拾い、0.008 以下の部屋ノイズは拾わない。
+      return {
+        floor: 0.004,
+        abs: 0.007,
+        mult: 2,
+        gapMs: 400,
+        stallMs: 1400,
+        resultMs: 1600
+      };
+    }
+    return {
+      floor: 0.012,
+      abs: 0.018,
+      mult: 3.2,
+      gapMs: 600,
+      stallMs: 2000,
+      resultMs: 2500
+    };
+  }
+
+  /**
+   * @param {number} level
+   * @param {number} floor
+   * @param {{abs: number, mult: number}} profile
+   * @returns {boolean}
+   */
+  static isSpeechHot(level, floor, profile) {
+    return level > Math.max(profile.abs, floor * profile.mult);
+  }
+
+  /**
+   * 再起動までの待ち。desktop 日本語だけ隙間を詰める。iOS / 英語は v57 のまま。
+   * @param {'no-speech'|'stall'|'end'} kind
+   * @param {boolean} isIOS
+   * @param {string} language
+   * @returns {number}
+   */
+  static restartDelay(kind, isIOS, language) {
+    const jaDesktop = language === 'ja-JP' && !isIOS;
+    if (isIOS) {
+      if (kind === 'no-speech' || kind === 'stall') return 70;
+      return 90;
+    }
+    if (kind === 'no-speech') return jaDesktop ? 15 : 25;
+    if (kind === 'stall') return jaDesktop ? 20 : 30;
+    return jaDesktop ? 20 : 35;
+  }
+
+  /**
+   * speechend 後、暫定がこのミリ秒動かなければ日本語 desktop だけ付け直す。
+   */
+  static jaHungWatchMs = 900;
+
+  /**
+   * @param {{language: string, ios: boolean, msSinceResult: number, hasInterim: boolean}} state
+   * @returns {boolean}
+   */
+  static shouldRecoverHungRecognition(state) {
+    if (!state || state.language !== 'ja-JP' || state.ios) return false;
+    if (!state.hasInterim) return false;
+    return state.msSinceResult >= Transcriber.jaHungWatchMs;
+  }
+
+  /**
    * 上位仮説が空、または尻切れのときだけ別案を採用する。文の書き換えはしない。
+   * 言語を渡さない、または英語のときは v57 と同じ規則。
+   * @param {SpeechRecognitionResult|Array<{transcript?: string, confidence?: number}>} result
+   * @param {string} [language]
+   * @returns {string}
+   */
+  static pickTranscript(result, language) {
+    if (language === 'ja-JP') return Transcriber._pickTranscriptJa(result);
+    return Transcriber._pickTranscriptEn(result);
+  }
+
+  /**
    * confidence が全て 0 のブラウザ（Chrome に多い）では、順位を信用する。
    * @param {SpeechRecognitionResult|Array<{transcript?: string, confidence?: number}>} result
    * @returns {string}
    */
-  static pickTranscript(result) {
+  static _pickTranscriptEn(result) {
     if (!result || !result.length) return '';
     const n = Math.min(result.length, 3);
     let anyConfidence = false;
@@ -583,6 +725,119 @@ class Transcriber {
   }
 
   /**
+   * 日本語は信頼度 0 が多く、早口の続きが 12 字を超える。最長の尻だけ足す。
+   * 数字表記（3 / 三）の差では尻を捨てない。空白 1 つだけの区切りはモーラの続きとみなす。
+   * @param {SpeechRecognitionResult|Array<{transcript?: string, confidence?: number}>} result
+   * @returns {string}
+   */
+  static _pickTranscriptJa(result) {
+    if (!result || !result.length) return '';
+    const n = Math.min(result.length, 5);
+    let anyConfidence = false;
+    for (let i = 0; i < n; i++) {
+      const confidence = result[i] && typeof result[i].confidence === 'number' ? result[i].confidence : 0;
+      if (confidence > 0) anyConfidence = true;
+    }
+
+    if (anyConfidence) {
+      let bestText = (result[0] && result[0].transcript) || '';
+      let bestConf = 0;
+      let bestScore = -1;
+      const scoreN = Math.min(n, 3);
+      for (let i = 0; i < scoreN; i++) {
+        const alt = result[i];
+        if (!alt) continue;
+        const text = alt.transcript || '';
+        const trimmed = text.trim();
+        if (!trimmed) continue;
+        const confidence = typeof alt.confidence === 'number' ? alt.confidence : 0;
+        const score = confidence + Math.min(trimmed.length, 40) * 0.0008;
+        if (score > bestScore) {
+          bestScore = score;
+          bestText = text;
+          bestConf = confidence;
+        }
+      }
+      return Transcriber._extendJaTail(bestText, result, n, bestConf);
+    }
+
+    const primary = (result[0] && result[0].transcript) || '';
+    const base = primary.trim();
+    if (!base) {
+      for (let i = 1; i < n; i++) {
+        const text = (result[i] && result[i].transcript) || '';
+        if (text.trim()) return text;
+      }
+      return primary;
+    }
+    return Transcriber._extendJaTail(primary, result, n, 0);
+  }
+
+  /**
+   * 漢数字との対応。長さは変えない。
+   * @param {string} text
+   * @returns {string}
+   */
+  static _foldJaDigits(text) {
+    const digits = '〇一二三四五六七八九';
+    return (text || '')
+      .replace(/[0-9]/g, (ch) => digits[ch.charCodeAt(0) - 48])
+      .replace(/[０-９]/g, (ch) => digits[ch.charCodeAt(0) - 0xFF10]);
+  }
+
+  /**
+   * @param {string} primary
+   * @param {SpeechRecognitionResult|Array<{transcript?: string, confidence?: number}>} result
+   * @param {number} n
+   * @param {number} bestConf
+   * @returns {string}
+   */
+  static _extendJaTail(primary, result, n, bestConf) {
+    const base = (primary || '').trim();
+    if (!base) return primary || '';
+    const foldBase = Transcriber._foldJaDigits(base);
+    let best = primary;
+    let bestExtra = 0;
+    for (let i = 1; i < n; i++) {
+      const alt = result[i];
+      if (!alt) continue;
+      const confidence = typeof alt.confidence === 'number' ? alt.confidence : 0;
+      if (bestConf > 0 && confidence > 0 && confidence < bestConf - 0.12) continue;
+      const trimmed = (alt.transcript || '').trim();
+      if (!trimmed) continue;
+      const folded = Transcriber._foldJaDigits(trimmed);
+      if (!folded.startsWith(foldBase)) continue;
+      const rawExtra = trimmed.slice(foldBase.length);
+      const extra = rawExtra.trim();
+      if (!extra || extra.length > 24) continue;
+      if ((rawExtra.match(/[ \t\u3000]/g) || []).length > 1) continue;
+      if (!/^[ \t\u3000]*[^ \t\u3000。、！？!?]+$/.test(rawExtra)) continue;
+      if (extra.length <= bestExtra) continue;
+      bestExtra = extra.length;
+      const prefix = trimmed.slice(0, foldBase.length).replace(/[ \t\u3000]+$/g, '');
+      best = prefix + extra;
+    }
+    return best;
+  }
+
+  /**
+   * 確定チャンクの末尾と次チャンクの頭が同じとき、繰り返したモーラを一度だけ残す。
+   * @param {string} left
+   * @param {string} right
+   * @returns {string}
+   */
+  static mergeJapaneseOverlap(left, right) {
+    const a = (left || '').replace(/[。、！？!?\s\u3000]+$/g, '');
+    const b = (right || '').replace(/^[。、！？!?\s\u3000]+/, '');
+    if (!a || !b) return '';
+    const max = Math.min(a.length, b.length, 24);
+    for (let len = max; len >= 4; len--) {
+      if (a.slice(-len) === b.slice(0, len)) return a.slice(0, -len) + b;
+    }
+    return '';
+  }
+
+  /**
    * 独立したフィラーだけ外す。あの / まあ / like など実語は残す。
    * @param {string} text
    * @param {string} language
@@ -591,8 +846,11 @@ class Transcriber {
   static stripFillers(text, language) {
     if (!text) return '';
     if (language === 'ja-JP') {
+      // えーと系は語彙になりにくいので落とす。あのー / そのー は実語なので長音だけ外す。
       return text
-        .replace(/えー+っと|えーっと|えーと|えっと|あのー+|あの〜+|そのー+|その〜+/g, '')
+        .replace(/えー+っと|えーっと|えーと|えっと/g, '')
+        .replace(/あのー+|あの〜+/g, 'あの')
+        .replace(/そのー+|その〜+/g, 'その')
         .replace(/^[、,\s]+/, '')
         .replace(/[ \t\u3000]{2,}/g, ' ');
     }
@@ -614,9 +872,10 @@ class Transcriber {
 
     const now = Date.now();
     const last = this._lastChunk || '';
+    const mergeMs = this.language === 'ja-JP' ? 2200 : 1600;
     if (last && this._normalize(next) === this._normalize(last)) {
       const echo = now - this._lastChunkAt < 450;
-      const promoted = this._lastFromInterim && now - this._lastChunkAt < 1600;
+      const promoted = this._lastFromInterim && now - this._lastChunkAt < mergeMs;
       if (echo || promoted) {
         this._lastFromInterim = false;
         return;
@@ -626,7 +885,7 @@ class Transcriber {
     if (
       this._lastFromInterim &&
       last &&
-      now - this._lastChunkAt < 1600 &&
+      now - this._lastChunkAt < mergeMs &&
       this._normalize(next).startsWith(this._normalize(last)) &&
       this._normalize(next).length > this._normalize(last).length
     ) {
@@ -684,7 +943,9 @@ class Transcriber {
       if (/\s$/.test(a) || /^[,.!?)]/.test(b)) return a + b;
       return `${a.replace(/\s+$/, '')} ${b}`;
     }
-    return a.replace(/[ \t]+$/g, '') + b;
+    const left = a.replace(/[ \t\u3000]+$/g, '');
+    const right = b.replace(/^[ \t\u3000]+/, '');
+    return Transcriber.mergeJapaneseOverlap(left, right) || (left + right);
   }
 
   /**
@@ -709,8 +970,8 @@ class Transcriber {
       res += '。';
     }
 
-    // 3. 接続・中継ぎパターン（〜ですが、〜ので、〜から、〜けど 等）の末尾に「、」を安全補完
-    const commaPatterns = /(?:ですが|ので|から|けれど|けれども|そして|また|しかし|ただし|なお|ですが)$/;
+    // 3. 接続の末尾に「、」。裸の「から」は「三時から」など時刻に付くので補完しない。
+    const commaPatterns = /(?:ですが|ので|けれど|けれども|そして|また|しかし|ただし|なお|だから|ですから)$/;
     if (commaPatterns.test(res) && !/[。、！？!?\n]$/.test(res)) {
       res += '、';
     }
@@ -727,3 +988,6 @@ class Transcriber {
 
 // グローバルエクスポート
 window.Transcriber = Transcriber;
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = Transcriber;
+}

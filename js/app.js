@@ -31,6 +31,7 @@ class VoiceScribeApp {
     this._whisperBusy = false;
     this._stopPromise = null;
     this._speechWatch = null;
+    this._speechProfile = null;
     this._speechFloor = 0.012;
     this._speechHotMs = 0;
 
@@ -203,7 +204,10 @@ class VoiceScribeApp {
     }
 
     try {
-      const stream = await this.recorder.start();
+      const stream = await this.recorder.start({
+        language: this.transcriber.language,
+        ios: this.transcriber.startBeforeRecorder
+      });
       if (!this.isRecording) {
         try { await this.recorder.stop(); } catch { /* 停止済み */ }
         return;
@@ -462,7 +466,11 @@ class VoiceScribeApp {
    */
   _startSpeechWatch() {
     this._stopSpeechWatch();
-    this._speechFloor = 0.012;
+    this._speechProfile = Transcriber.speechWatchProfile(
+      this.transcriber.language,
+      this.transcriber.startBeforeRecorder
+    );
+    this._speechFloor = this._speechProfile.floor;
     this._speechHotMs = 0;
     this._speechWatch = setInterval(() => this._pollSpeechLevel(), 200);
   }
@@ -490,7 +498,8 @@ class VoiceScribeApp {
     const level = this.visualizer.getSpeechLevel();
     if (level == null || Number.isNaN(level)) return;
 
-    const speaking = level > Math.max(0.018, this._speechFloor * 3.2);
+    const profile = this._speechProfile || Transcriber.speechWatchProfile('en-US', false);
+    const speaking = Transcriber.isSpeechHot(level, this._speechFloor, profile);
     if (!speaking) {
       this._speechFloor = this._speechFloor * 0.96 + level * 0.04;
       this._speechHotMs = 0;
@@ -498,15 +507,15 @@ class VoiceScribeApp {
     }
 
     this._speechHotMs += 200;
-    if (this._speechHotMs < 600) return;
+    if (this._speechHotMs < profile.gapMs) return;
 
     if (!this.transcriber.isEngineRunning()) {
       this.transcriber.nudge('gap');
       this._speechHotMs = 0;
       return;
     }
-    // 走り始めの発話は切らない。2秒以上、結果も speechstart も無いときだけ付け直す。
-    if (this._speechHotMs >= 2000 && this.transcriber.msSinceResult() >= 2500) {
+    // 暫定が流れているあいだは nudge 側が切らない。結果も speechstart も無いときだけ付け直す。
+    if (this._speechHotMs >= profile.stallMs && this.transcriber.msSinceResult() >= profile.resultMs) {
       this.transcriber.nudge('stall');
       this._speechHotMs = 0;
     }
