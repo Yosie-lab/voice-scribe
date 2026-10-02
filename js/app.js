@@ -540,8 +540,8 @@ class VoiceScribeApp {
       this._stallHotMs = 0;
       return;
     }
-    // 英語だけ、結果も speechstart も無い長い発話で付け直す。
-    // desktop ja は nudge('stall') が abort しない。2.5 秒で切ると仮説が捨てられる。
+    // 英語だけ、結果も speechstart も無い長い発話で abort して付け直す。
+    // desktop ja は仮説のあと結果が止まったときだけ stop() する。2.5 秒では切らない。
     if (this._stallHotMs >= profile.stallMs && this.transcriber.msSinceResult() >= profile.resultMs) {
       this.transcriber.nudge('stall');
       this._speechHotMs = 0;
