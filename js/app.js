@@ -166,6 +166,16 @@ class VoiceScribeApp {
       });
     }
 
+    const resumeBtn = document.getElementById('resume-reading-btn');
+    if (resumeBtn) {
+      resumeBtn.addEventListener('click', () => {
+        this._resumeReading();
+      });
+    }
+    this.transcriber.onListeningChange = () => {
+      this._syncResumeReading();
+    };
+
     const liveObsidianBtn = document.getElementById('live-obsidian-btn');
     if (liveObsidianBtn) {
       liveObsidianBtn.addEventListener('click', () => this._saveLiveToObsidian());
@@ -327,11 +337,13 @@ class VoiceScribeApp {
     const recognitionFirst = this.transcriber.startBeforeRecorder;
 
     if (recognitionFirst) {
+      let started = false;
       try {
-        this.transcriber.start();
+        started = this.transcriber.start() !== false;
       } catch (e) {
         console.warn('SpeechRecognition start warning:', e);
       }
+      if (!started) this.transcriber.armResume();
       this._primeContinuedTranscript();
     }
 
@@ -355,11 +367,13 @@ class VoiceScribeApp {
     if (!this.isRecording) return;
 
     if (!recognitionFirst) {
+      let started = false;
       try {
-        this.transcriber.start();
+        started = this.transcriber.start() !== false;
       } catch (e) {
         console.warn('SpeechRecognition start warning:', e);
       }
+      if (!started) this.transcriber.armResume();
       this._primeContinuedTranscript();
     }
 
@@ -375,6 +389,7 @@ class VoiceScribeApp {
     this.ui.showToast(prior ? '🎙️ 続きを録音中' : '🎙️ 録音中（お話しください）', 'success', 2000);
     } finally {
       this._starting = false;
+      this._syncResumeReading();
     }
   }
 
@@ -568,6 +583,7 @@ class VoiceScribeApp {
       this._recognitionGesture = null;
     }
     this._syncDraftControls();
+    this._syncResumeReading();
   }
 
   /**
@@ -956,12 +972,14 @@ class VoiceScribeApp {
       }
       const target = event.target;
       // クリアは次の click に任せる。このリスナはイベントを止めない。
-      if (target && target.closest && target.closest('#record-btn, #pause-btn, #clear-transcript-btn, #continue-recording-btn, #draft-play-btn')) return;
+      if (target && target.closest && target.closest('#record-btn, #pause-btn, #clear-transcript-btn, #continue-recording-btn, #draft-play-btn, #resume-reading-btn')) return;
       if (this.transcriber.isEngineRunning()) {
         document.removeEventListener('pointerdown', onPointer, true);
         this._recognitionGesture = null;
         return;
       }
+      // desktop は死んだマイクのあとに認識を起こす。タップの先走りで getUserMedia より前に start しない。
+      if (!this.transcriber.startBeforeRecorder && this.recorder.needsRecovery()) return;
       this.transcriber.continueListening();
     };
     this._recognitionGesture = onPointer;
@@ -989,10 +1007,14 @@ class VoiceScribeApp {
       this.ui.setRecordingStatus('paused');
       if (pauseBtn) pauseBtn.textContent = '▶️';
       if (this.visualizer) this.visualizer.startIdleAnimation();
+      this._syncResumeReading();
       return;
     }
 
     this._userPaused = false;
+    const ios = this.transcriber.startBeforeRecorder;
+    // iOS は await より前、このタップの中で認識を付ける。
+    if (ios) this.transcriber.continueListening();
     let stream = this.recorder.stream;
     if (!this.recorder.resume()) {
       try {
@@ -1001,14 +1023,16 @@ class VoiceScribeApp {
         console.warn('再開に失敗:', error);
         this._userPaused = true;
         this.recorder.state = 'paused';
+        if (ios) this.transcriber.stop();
         this.ui.setRecordingStatus('paused');
         if (pauseBtn) pauseBtn.textContent = '▶️';
         this.ui.showToast('マイクを再開できませんでした。', 'error');
+        this._syncResumeReading();
         return;
       }
     }
 
-    this.transcriber.continueListening();
+    if (!ios) this.transcriber.continueListening();
     this._startTimer();
     this.ui.setRecordingStatus('recording');
     if (pauseBtn) pauseBtn.textContent = '⏸️';
@@ -1016,6 +1040,59 @@ class VoiceScribeApp {
       this.visualizer.stopIdleAnimation();
       await this.visualizer.connectStream(stream);
     }
+    this._syncResumeReading();
+  }
+
+  /**
+   * 読み取りが止まったあとに、残っているテキストを消さず認識を付け直す。
+   * desktop は生きているストリームを使い、死んでいれば録音経路で取り直してから認識する。
+   * iOS はタップの同期区間で continuous:false の認識を先に start する。
+   * @private
+   */
+  async _resumeReading() {
+    if (!this.isRecording || this._userPaused || this._stopPromise) return;
+    const ios = this.transcriber.startBeforeRecorder;
+    if (ios && (!this.transcriber.isEngineRunning() || this.recorder.needsRecovery())) {
+      this.transcriber.continueListening();
+    }
+
+    let stream = this.recorder.stream;
+    const captureDown = this.recorder.needsRecovery();
+    if (captureDown) {
+      try {
+        stream = await this.recorder.ensureCapture();
+      } catch (error) {
+        console.warn('読み取り再開でマイクを戻せませんでした:', error);
+        this.ui.showToast('マイクを再開できませんでした。', 'error');
+        this._syncResumeReading();
+        return;
+      }
+    }
+
+    if (!this.isRecording || this._userPaused) return;
+    if (this.visualizer && stream) {
+      this.visualizer.stopIdleAnimation();
+      await this.visualizer.connectStream(stream);
+    }
+
+    if (!ios && (captureDown || !this.transcriber.isEngineRunning())) {
+      this.transcriber.continueListening();
+    }
+    this._recoverAttempts = 0;
+    this._syncResumeReading();
+  }
+
+  /**
+   * 認識が落ちている、または録音トラックが切れているときだけ「再開」を出す。
+   * @private
+   */
+  _syncResumeReading() {
+    const btn = document.getElementById('resume-reading-btn');
+    if (!btn || !this.transcriber) return;
+    const recognitionDown = this.transcriber.needsResume()
+      || (!this.transcriber.isEngineRunning() && this.recorder.needsRecovery());
+    const show = !!(this.isRecording && !this._userPaused && recognitionDown);
+    btn.style.display = show ? 'inline-flex' : 'none';
   }
 
   /**
@@ -1052,6 +1129,7 @@ class VoiceScribeApp {
    * @private
    */
   _pollSpeechLevel() {
+    this._syncResumeReading();
     if (!this.isRecording || this._userPaused || document.visibilityState === 'hidden') {
       this._speechHotMs = 0;
       this._stallHotMs = 0;
@@ -1215,6 +1293,7 @@ class VoiceScribeApp {
       this._recoverAttempts = 0;
       this._startTimer();
       this.ui.setRecordingStatus('recording');
+      this._syncResumeReading();
       return;
     }
 
@@ -1223,11 +1302,6 @@ class VoiceScribeApp {
 
     if (captureDown) {
       this._recoverAttempts++;
-      if (this._recoverAttempts > 3) {
-        this.ui.showToast('画面ロック後にマイクへ復帰できませんでした。ここまでの録音を保存します。', 'info', 4000);
-        await this._stopRecording();
-        return;
-      }
       try {
         const stream = await this.recorder.ensureCapture();
         if (!this.isRecording || gen !== this._recoverGen) return;
@@ -1246,8 +1320,12 @@ class VoiceScribeApp {
           this._backgrounded = true;
           return;
         }
-        this.ui.showToast('画面ロック後にマイクへ復帰できませんでした。ここまでの録音を保存します。', 'info', 4000);
-        await this._stopRecording();
+        // ユーザが停止するまで録音は終わらせない。テキストもマイクのチャンクも残す。
+        if (this._recoverAttempts === 1) {
+          this.ui.showToast('マイクが一時的に外れました。録音は続けています。', 'info', 4000);
+        }
+        this._syncResumeReading();
+        this._scheduleCaptureRetry();
         return;
       }
     } else if (this.visualizer && this.visualizer.audioCtx && this.visualizer.audioCtx.state === 'suspended') {
@@ -1260,9 +1338,29 @@ class VoiceScribeApp {
 
     if (!this.isRecording || gen !== this._recoverGen || this._userPaused) return;
     this._recoverAttempts = 0;
-    this.transcriber.resumeAfterBackground();
+    // マイクを取り直したあとに認識を付ける。先に start すると desktop Chrome は abort する。
+    if (captureDown && !this.transcriber.startBeforeRecorder) {
+      this.transcriber.continueListening();
+    } else {
+      this.transcriber.resumeAfterBackground();
+    }
     this.ui.setRecordingStatus('recording');
     this._armRecognitionGesture();
+    this._syncResumeReading();
+  }
+
+  /**
+   * マイク復帰が失敗してもセッションは残し、間隔を空けて同じ録音を付け直す。
+   * @private
+   */
+  _scheduleCaptureRetry() {
+    if (this._recoverTimer) clearTimeout(this._recoverTimer);
+    const wait = Math.min(8000, 700 * Math.max(1, this._recoverAttempts));
+    this._recoverTimer = setTimeout(() => {
+      this._recoverTimer = null;
+      if (!this.isRecording || this._userPaused || document.visibilityState === 'hidden') return;
+      this._recoverActiveRecording();
+    }, wait);
   }
 
   /**

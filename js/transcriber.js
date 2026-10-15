@@ -5,6 +5,8 @@
  * - セッション: start / stop / continue / 再起動。マイクは開かない。
  * - 結果の確定: 候補選択、暫定の保全、重なり結合、描画コールバック。同じ区間は二度入れない。
  * - 回復: desktop ja が黙ったときだけ stop() して付け直す。仮説を捨てる abort() は回復に使わない。
+ * - 再起動が何度失敗しても、ユーザが止めるまで shouldRestart は落とさない。録音はここでは止めない。
+ * - 同じ確定句の再送は repeatWindowMs のあいだ足さない。resultIndex は再起動で 0 に戻る。
  *
  * 制約:
  * - desktop ja は continuous:true で話しているあいだ暫定を流す。iOS は continuous:false。
@@ -47,11 +49,18 @@ class Transcriber {
       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     this._jaHungTimer = null;
     this._jaSpeechEndTimer = null;
+    this._stopWatch = null;
+    this._stopWatchGen = 0;
+    this._stopWatchPending = false;
+    this._resumeNeeded = false;
+    this._restartDelayMs = 0;
+    this._recentNorms = [];
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
     this.onError = null;  // (errorMessage) => {}
     this.onEnd = null;    // () => {}
+    this.onListeningChange = null; // () => {} 認識が落ちた / 戻った
   }
 
   /**
@@ -84,6 +93,8 @@ class Transcriber {
   init() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
+    // 新しい認識の resultIndex は 0 から。カーソルを残すと次の発話まで捨て、字幕が止まったように見える。
+    // 確定済みの句は消さない。同じ句の再送は _recentNorms で落とす。
     this._finalCursor = 0;
     this._clearJaHungWatch();
     this._clearJaSpeechEndFlush();
@@ -129,6 +140,9 @@ class Transcriber {
    */
   _onRecognitionStart() {
     this._engineRunning = true;
+    this._resumeNeeded = false;
+    this._stopWatchPending = false;
+    this._clearStopWatch();
     this._sessionStartedAt = Date.now();
     this._heardSpeechAt = 0;
     this._speechEndedAt = 0;
@@ -138,6 +152,7 @@ class Transcriber {
     this._resumeWhenVisible = false;
     this._clearJaSpeechEndFlush();
     this._armJaLiveWatch();
+    this._notifyListening();
   }
 
   /**
@@ -268,29 +283,28 @@ class Transcriber {
 
     // desktop Chromium は MediaRecorder の getUserMedia にマイクを取られると
     // aborted だけで黙って死ぬ（onend が来ないことがある）。録音中なら作り直す。
-    // iOS は onend の再生成に任せ、ここは触らない。
+    // 回数で stop() しない。止めると歌の途中で字幕が戻らない。
+    // iOS は onend の再生成に任せ、ここは watch だけ付ける。
     if (err === 'aborted') {
       this._engineRunning = false;
       const intentional = this._intentionalAbort;
       this._intentionalAbort = false;
       if (this._deferWhileHidden()) return;
-      if (!this._isIOS && this.shouldRestart && this.isListening) {
-        if (!intentional) {
-          this._contentionRestarts++;
-          this._restartNotBefore = Date.now() + 280;
-          if (this._contentionRestarts > this.maxRetries) {
-            this.stop();
-            if (this.onError) {
-              this.onError('音声認識を継続できません。もう一度録音を開始してください。');
-            }
-            return;
-          }
-        }
-        const jaWaiting = this._isDesktopJa() && !this._gotHypothesis
-          && (intentional || this._speechEndedAt > 0);
-        if (!jaWaiting) this._jaFastRestart = false;
-        this._scheduleRestart(jaWaiting ? this._restartDelayFor('end') : (intentional ? 40 : 300));
+      if (!this.shouldRestart || !this.isListening) return;
+      if (this._isIOS) {
+        this._armStopWatch();
+        return;
       }
+      if (!intentional) {
+        this._contentionRestarts++;
+        this._restartNotBefore = Date.now() + 280;
+        if (this._contentionRestarts > this.maxRetries) this._signalResumeNeeded();
+      }
+      const jaWaiting = this._isDesktopJa() && !this._gotHypothesis
+        && (intentional || this._speechEndedAt > 0);
+      if (!jaWaiting) this._jaFastRestart = false;
+      const backoff = Math.min(1500, 300 + this._contentionRestarts * 120);
+      this._scheduleRestart(jaWaiting ? this._restartDelayFor('end') : (intentional ? 40 : backoff));
       return;
     }
 
@@ -300,15 +314,8 @@ class Transcriber {
       if (this._deferWhileHidden()) return;
       if (this.shouldRestart && this.isListening) {
         this.retryCount++;
-        if (this.retryCount <= this.maxRetries) {
-          this._scheduleRestart(300);
-          return;
-        }
-        this._resumeWhenVisible = true;
-        if (!this._captureErrorNotified) {
-          this._captureErrorNotified = true;
-          if (this.onError) this.onError('音声認識が中断されました。録音は継続しています。');
-        }
+        if (this.retryCount > 2) this._signalResumeNeeded();
+        this._scheduleRestart(Math.min(2500, 300 * this.retryCount));
         return;
       }
       if (this.onError) this.onError('マイクにアクセスできません。');
@@ -318,15 +325,24 @@ class Transcriber {
     if (err === 'not-allowed') {
       this._engineRunning = false;
       if (this._deferWhileHidden()) return;
+      // 録音中の拒否はジェスチャが要る。セッションと確定テキストは残し、再開ボタンに渡す。
       if (this.shouldRestart && this.isListening && this._engineWasStarted) {
-        this._resumeWhenVisible = true;
+        this._signalResumeNeeded();
         return;
       }
       if (this.onError) this.onError('マイクの使用が許可されていません。');
       this.stop();
       return;
     }
-    if (this.shouldRestart) this._scheduleRestart();
+
+    // network などで onend が来ないことがある。動いている扱いにしたままにしない。
+    this._engineRunning = false;
+    if (this._deferWhileHidden()) return;
+    if (this.shouldRestart && this.isListening) {
+      this.retryCount++;
+      if (this.retryCount > 2) this._signalResumeNeeded();
+      this._scheduleRestart(Math.min(2000, 300 + this.retryCount * 150));
+    }
   }
 
   /**
@@ -338,12 +354,15 @@ class Transcriber {
     this._engineRunning = false;
     this._intentionalAbort = false;
     this._jaUnwedgeSent = false;
+    this._stopWatchPending = false;
+    this._clearStopWatch();
     this._clearJaHungWatch();
     this._clearJaSpeechEndFlush();
     this._commitPendingInterim();
     if (this._hold || document.visibilityState === 'hidden') {
       if (this.shouldRestart && this.isListening) this._resumeWhenVisible = true;
       if (this.onNeedsCheckpoint) this.onNeedsCheckpoint();
+      this._notifyListening();
       return;
     }
     if (this.shouldRestart && this.isListening) {
@@ -351,6 +370,7 @@ class Transcriber {
     } else {
       this.isListening = false;
       if (this.onEnd) this.onEnd();
+      this._notifyListening();
     }
   }
 
@@ -412,9 +432,14 @@ class Transcriber {
     this._gotHypothesis = false;
     this._jaFastRestart = false;
     this._jaUnwedgeSent = false;
+    this._resumeNeeded = false;
+    this._restartDelayMs = 0;
+    this._stopWatchPending = false;
+    this._recentNorms = [];
     this.retryCount = 0;
     this._contentionRestarts = 0;
     this._clearRestartTimer();
+    this._clearStopWatch();
     this._hold = false;
     this._resumeWhenVisible = false;
     this.shouldRestart = true;
@@ -449,10 +474,15 @@ class Transcriber {
     this._intentionalAbort = false;
     this._jaFastRestart = false;
     this._jaUnwedgeSent = false;
+    this._resumeNeeded = false;
+    this._restartDelayMs = 0;
+    this._stopWatchPending = false;
     this._clearRestartTimer();
+    this._clearStopWatch();
     this._clearJaHungWatch();
     this._clearJaSpeechEndFlush();
     this._commitPendingInterim();
+    this._notifyListening();
 
     if (this.recognition) {
       try {
@@ -543,6 +573,33 @@ class Transcriber {
     this._lastChunk = '';
     this._lastChunkAt = 0;
     this._lastFromInterim = false;
+    this._recentNorms = [];
+  }
+
+  /**
+   * 認識が落ちていて、自動の短い再起動だけでは戻っていない。
+   * 動いているあいだ、隠しているあいだ、発話ごとの短い切れ目では false。
+   * @returns {boolean}
+   */
+  needsResume() {
+    if (!this.shouldRestart || !this.isListening) return false;
+    if (this._hold) return false;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    if (this._engineRunning) return false;
+    if (this._resumeNeeded) return true;
+    if (this._restartTimer && this._restartDelayMs < Transcriber.resumeGapMs) return false;
+    return true;
+  }
+
+  /**
+   * タップなしでは認識を始められなかったとき。確定テキストは消さない。
+   */
+  armResume() {
+    this.shouldRestart = true;
+    this.isListening = true;
+    this._engineRunning = false;
+    this._hold = false;
+    this._signalResumeNeeded();
   }
 
   /**
@@ -624,10 +681,12 @@ class Transcriber {
     const delay = typeof delayMs === 'number'
       ? delayMs
       : Transcriber.restartDelay('end', this._isIOS, this.language);
+    this._restartDelayMs = delay;
     this._restartTimer = setTimeout(() => {
       this._restartTimer = null;
       this._restartNow();
     }, delay);
+    this._notifyListening();
   }
 
   /**
@@ -663,30 +722,14 @@ class Transcriber {
       this._lastResultAt = Date.now();
       this.retryCount = 0;
     } catch (error) {
-      if (error && error.name === 'InvalidStateError') {
-        this.retryCount++;
-        if (this.retryCount > this.maxRetries) {
-          this.stop();
-          if (this.onError) this.onError('音声認識を継続できません。もう一度録音を開始してください。');
-          return;
-        }
-        this._restartTimer = setTimeout(() => {
-          this._restartTimer = null;
-          this._restartNow();
-        }, 160);
-        return;
+      this._engineRunning = false;
+      if (!error || error.name !== 'InvalidStateError') {
+        console.warn('音声認識リトライ警告:', error);
       }
-      console.warn('音声認識リトライ警告:', error);
       this.retryCount++;
-      if (this.retryCount > this.maxRetries) {
-        this.stop();
-        if (this.onError) this.onError('音声認識を継続できません。もう一度録音を開始してください。');
-        return;
-      }
-      this._restartTimer = setTimeout(() => {
-        this._restartTimer = null;
-        this._restartNow();
-      }, 250);
+      // ここで stop() すると shouldRestart が落ち、歌の途中で認識が戻らない。
+      if (this.retryCount > this.maxRetries) this._signalResumeNeeded();
+      this._scheduleRestart(Math.min(2000, 160 * Math.max(1, this.retryCount)));
     }
   }
 
@@ -698,6 +741,56 @@ class Transcriber {
       clearTimeout(this._restartTimer);
       this._restartTimer = null;
     }
+  }
+
+  /**
+   * stop() のあと onend が来ない Chrome は、エンジンが動いていることにしたまま黙る。
+   * 録音は止めず、認識インスタンスだけ作り直す。
+   * @private
+   */
+  _armStopWatch() {
+    this._clearStopWatch();
+    this._stopWatchPending = true;
+    const gen = this._stopWatchGen;
+    this._stopWatch = setTimeout(() => {
+      this._stopWatch = null;
+      if (gen !== this._stopWatchGen) return;
+      if (!this._stopWatchPending) return;
+      if (!this.shouldRestart || !this.isListening) return;
+      this._stopWatchPending = false;
+      this._engineRunning = false;
+      this._jaUnwedgeSent = false;
+      this._intentionalAbort = false;
+      if (this._restartTimer) return;
+      this._scheduleRestart(Transcriber.restartDelay('end', this._isIOS, this.language));
+    }, Transcriber.stopWatchMs);
+  }
+
+  /**
+   * @private
+   */
+  _clearStopWatch() {
+    this._stopWatchGen += 1;
+    if (this._stopWatch) {
+      clearTimeout(this._stopWatch);
+      this._stopWatch = null;
+    }
+  }
+
+  /**
+   * @private
+   */
+  _signalResumeNeeded() {
+    if (!this.shouldRestart || !this.isListening) return;
+    this._resumeNeeded = true;
+    this._notifyListening();
+  }
+
+  /**
+   * @private
+   */
+  _notifyListening() {
+    if (this.onListeningChange) this.onListeningChange();
   }
 
   // -------------------------------------------------------------------------
@@ -728,7 +821,10 @@ class Transcriber {
       if (action !== 'stop') return;
       this._intentionalAbort = true;
       try {
-        if (this.recognition) this.recognition.stop();
+        if (this.recognition) {
+          this.recognition.stop();
+          this._armStopWatch();
+        }
       } catch {
         this._intentionalAbort = false;
       }
@@ -819,7 +915,10 @@ class Transcriber {
     this._clearJaSpeechEndFlush();
     this._commitPendingInterim();
     try {
-      if (this.recognition) this.recognition.stop();
+      if (this.recognition) {
+        this.recognition.stop();
+        this._armStopWatch();
+      }
     } catch {
       this._jaFastRestart = false;
       this._intentionalAbort = false;
@@ -936,6 +1035,23 @@ class Transcriber {
    * ライブ ja セッションを止めて結果を求めるまでの待ち。2.5 秒の abort は仮説より短い。
    */
   static jaLiveStopMs = 8000;
+
+  /**
+   * 同じ確定句を再送とみなす窓。
+   * desktop ja の stop()+restart は jaStaleStopMs（4.5s）や jaResultGraceMs（3s）だけ空く。
+   * 旧 2200ms では、再起動後に Chrome が同じ歌詞の final をもう一度出すと字幕が重複する。
+   */
+  static repeatWindowMs = 12000;
+
+  /**
+   * これより短い自動再起動では「再開」を出さない。iOS の発話ごとの切れ目で点滅させない。
+   */
+  static resumeGapMs = 1200;
+
+  /**
+   * 回復の stop() のあと onend が来ないとき、認識だけ付け直すまでの待ち。
+   */
+  static stopWatchMs = 800;
 
   /**
    * iOS だけ発話ごとに終わらせて onend で付け直す。
@@ -1353,7 +1469,131 @@ class Transcriber {
 
   // -------------------------------------------------------------------------
   // 結果の確定。フィラーは残す。空になった暫定は残す。重なったモーラは一度だけ。
+  // 同じ句の再送は repeatWindowMs のあいだ足さない。再起動で resultIndex は 0 に戻る。
   // -------------------------------------------------------------------------
+
+  /**
+   * 句読点を除いて先頭 plainLen 文字を返す。
+   * @param {string} raw
+   * @param {number} plainLen
+   * @returns {string}
+   */
+  static _headPlain(raw, plainLen) {
+    const trimmed = (raw || '').trim();
+    let counted = 0;
+    let i = 0;
+    while (i < trimmed.length && counted < plainLen) {
+      if (!/[\s\u3000。、！？!?.,]/.test(trimmed[i])) counted += 1;
+      i += 1;
+    }
+    return trimmed.slice(0, i).replace(/[\s\u3000。、！？!?.,]+$/g, '');
+  }
+
+  /**
+   * Chrome が歌で同じ句を1つの final に二度入れることがある。全文が同じ単位の繰り返しなら一度にする。
+   * 4文字未満の単位（あ、はい）は吃音なので畳まない。
+   * @param {string} text
+   * @param {string} language
+   * @returns {string}
+   */
+  static collapseRepeatedPhrase(text, language) {
+    if (language !== 'ja-JP') return text || '';
+    const raw = (text || '').trim();
+    if (!raw) return '';
+    const norm = Transcriber._foldJaDigits(Transcriber._plain(raw));
+    if (norm.length < 8) return raw;
+    const maxUnit = Math.floor(norm.length / 2);
+    for (let unit = maxUnit; unit >= 4; unit--) {
+      if (norm.length % unit !== 0) continue;
+      const times = norm.length / unit;
+      if (times < 2 || times > 6) continue;
+      const piece = norm.slice(0, unit);
+      let same = true;
+      for (let t = 1; t < times; t++) {
+        if (norm.slice(t * unit, (t + 1) * unit) !== piece) {
+          same = false;
+          break;
+        }
+      }
+      if (!same) continue;
+      return Transcriber._headPlain(raw, unit) || raw;
+    }
+    return raw;
+  }
+
+  /**
+   * @param {number} now
+   * @returns {{norm: string, at: number}[]}
+   * @private
+   */
+  _recentRows(now) {
+    const windowMs = Transcriber.repeatWindowMs;
+    const kept = (this._recentNorms || []).filter((row) => row && row.norm && now - row.at < windowMs);
+    this._recentNorms = kept;
+    return kept;
+  }
+
+  /**
+   * @param {string} norm
+   * @param {number} now
+   * @private
+   */
+  _rememberNorm(norm, now) {
+    if (!norm) return;
+    const rows = this._recentRows(now);
+    rows.push({ norm, at: now });
+    if (rows.length > 12) rows.splice(0, rows.length - 12);
+    this._recentNorms = rows;
+  }
+
+  /**
+   * @param {string} norm
+   * @param {number} now
+   * @returns {boolean}
+   * @private
+   */
+  _touchNorm(norm, now) {
+    const rows = this._recentRows(now);
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i].norm === norm) {
+        rows[i].at = now;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 直近の確定と同じ句、または窓内に既にある同じ句。再起動後の final 再送をここで落とす。
+   * 1文字は吃音と途中結果なので、旧来の 450ms だけ見る。
+   * @param {string} nextNorm
+   * @param {number} now
+   * @returns {boolean}
+   * @private
+   */
+  _isRepeatedCommit(nextNorm, now) {
+    if (!nextNorm) return false;
+    const rows = this._recentRows(now);
+    if (!rows.length) return false;
+    const latest = rows[rows.length - 1];
+    if (latest.norm === nextNorm) {
+      if (nextNorm.length >= 2) return true;
+      return now - latest.at < 450;
+    }
+    if (nextNorm.length < 4) return false;
+    return rows.some((row) => row.norm === nextNorm);
+  }
+
+  /**
+   * @param {string} nextNorm
+   * @param {number} now
+   * @private
+   */
+  _dropRepeated(nextNorm, now) {
+    if (!this._touchNorm(nextNorm, now)) this._rememberNorm(nextNorm, now);
+    this._lastChunkAt = now;
+    this._lastFromInterim = false;
+  }
 
   /**
    * @param {string} raw
@@ -1362,23 +1602,23 @@ class Transcriber {
   _appendFinal(raw) {
     let next = Transcriber.stripFillers(raw, this.language).trim();
     if (!next) return;
+    if (this.language === 'ja-JP') next = Transcriber.collapseRepeatedPhrase(next, this.language);
     if (this.language === 'ja-JP') next = this._formatJapanesePunctuation(next);
     if (!next.trim()) return;
 
     const now = Date.now();
     const last = this._lastChunk || '';
-    const mergeMs = this.language === 'ja-JP' ? 2200 : 1600;
-    if (last && this._normalize(next) === this._normalize(last)) {
-      const echo = now - this._lastChunkAt < 450;
-      const promoted = this._lastFromInterim && now - this._lastChunkAt < mergeMs;
-      if (echo || promoted) {
-        this._lastFromInterim = false;
-        return;
-      }
-    }
-
     const lastNorm = this._normalize(last);
     const nextNorm = this._normalize(next);
+    if (!nextNorm) return;
+    const mergeMs = this.language === 'ja-JP' ? 2200 : 1600;
+
+    // 同じ句の連続、および再起動で再送された窓内の同一句。2200ms では grace / stale stop に届かない。
+    if (nextNorm && this._isRepeatedCommit(nextNorm, now)) {
+      this._dropRepeated(nextNorm, now);
+      return;
+    }
+
     const shortJa = this.language === 'ja-JP' && lastNorm.length >= 2 && lastNorm.length <= 8;
     if (
       last &&
@@ -1393,18 +1633,19 @@ class Transcriber {
       this._lastChunk = next;
       this._lastChunkAt = now;
       this._lastFromInterim = false;
+      this._rememberNorm(nextNorm, now);
       return;
     }
 
-    // 日本語の確定の尻に既にある区間（最終の再送、3 と 三）は足さない。言い直しは merge 窓のあと。
+    // 長い確定の尻だけが final で戻ってくる（3 と 三を含む）。言い直しは窓のあと。
     const committedNorm = this._normalize(this.finalTranscript);
     if (
       this.language === 'ja-JP' &&
       nextNorm.length >= 4 &&
       committedNorm.endsWith(nextNorm) &&
-      now - this._lastChunkAt < mergeMs
+      now - this._lastChunkAt < Transcriber.repeatWindowMs
     ) {
-      this._lastFromInterim = false;
+      this._dropRepeated(nextNorm, now);
       return;
     }
 
@@ -1412,6 +1653,7 @@ class Transcriber {
     this._lastChunk = next;
     this._lastChunkAt = now;
     this._lastFromInterim = false;
+    this._rememberNorm(nextNorm, now);
   }
 
   /**
