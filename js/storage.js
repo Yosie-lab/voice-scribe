@@ -32,6 +32,7 @@ class StorageManager {
       request.onsuccess = (event) => {
         this.db = event.target.result;
         console.log('IndexedDB 初期化完了');
+        this.requestPersist();
         resolve();
       };
 
@@ -43,18 +44,60 @@ class StorageManager {
   }
 
   /**
-   * 録音データを保存
+   * 可能ならオリジンの保存を退避対象から外す。拒否されても録音は続ける。
+   * @returns {Promise<boolean>}
+   */
+  requestPersist() {
+    const storage = typeof navigator !== 'undefined' ? navigator.storage : null;
+    if (!storage || typeof storage.persist !== 'function') return Promise.resolve(false);
+    return storage.persist().catch(() => false);
+  }
+
+  /**
+   * 履歴1件。音声 Blob は IndexedDB、テキストは同じレコードの構造化フィールド。
+   * transcript は既存画面用。text / durationMs / audioKey は再起動後も同じ意味で読める。
    * @param {Object} recording
-   * @param {string} recording.id
-   * @param {Blob|null} recording.audioBlob
-   * @param {string} recording.mimeType
-   * @param {string} recording.transcript
-   * @param {string} recording.language
-   * @param {number} recording.duration
-   * @param {number} recording.createdAt
-   * @returns {Promise<void>}
+   * @returns {Object}
+   */
+  static normalize(recording) {
+    const source = recording || {};
+    const fromTranscript = source.transcript != null ? String(source.transcript).trim() : '';
+    const fromText = source.text != null ? String(source.text).trim() : '';
+    const text = fromTranscript || fromText;
+    const createdAt = source.createdAt || Date.now();
+    const durationMs = Number.isFinite(source.durationMs)
+      ? Math.max(0, Math.round(source.durationMs))
+      : Math.max(0, Math.round((Number(source.duration) || 0) * 1000));
+    const segments = Array.isArray(source.segments)
+      ? source.segments.filter((blob) => blob && blob.size)
+      : [];
+    let audioBlob = source.audioBlob && source.audioBlob.size ? source.audioBlob : null;
+    if (!audioBlob && segments.length === 1) audioBlob = segments[0];
+    return Object.assign({}, source, {
+      id: source.id,
+      createdAt: createdAt,
+      updatedAt: Date.now(),
+      text: text,
+      transcript: text,
+      mimeType: source.mimeType || (audioBlob && audioBlob.type) || 'audio/mp4',
+      duration: Math.round(durationMs / 1000),
+      durationMs: durationMs,
+      audioKey: source.audioKey || source.id,
+      audioBlob: audioBlob,
+      segments: segments.length > 1 ? segments : null,
+      language: source.language || 'ja-JP',
+      title: source.title || ''
+    });
+  }
+
+  /**
+   * 録音データを保存。request の success ではなく transaction の完了で返す。
+   * iOS がページを殺す前に、コミットまで届いたかを呼び出し側が待ける。
+   * @param {Object} recording
+   * @returns {Promise<Object>}
    */
   async save(recording) {
+    const record = StorageManager.normalize(recording);
     return new Promise((resolve, reject) => {
       if (!this.db) {
         reject(new Error('データベースが初期化されていません'));
@@ -63,13 +106,22 @@ class StorageManager {
 
       const tx = this.db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
-      const request = store.put(recording);
+      const request = store.put(record);
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        if (error) reject(error);
+        else resolve(record);
+      };
 
-      request.onsuccess = () => resolve();
       request.onerror = (event) => {
         console.error('データ保存エラー:', event.target.error);
-        reject(event.target.error);
+        finish(event.target.error || new Error('データ保存エラー'));
       };
+      tx.oncomplete = () => finish();
+      tx.onabort = () => finish(tx.error || new Error('保存が確定しませんでした'));
+      tx.onerror = () => finish(tx.error || new Error('保存に失敗しました'));
     });
   }
 
@@ -161,7 +213,8 @@ class StorageManager {
     const lowerQuery = query.toLowerCase().trim();
     return all.filter((rec) => {
       const titleMatch = rec.title && rec.title.toLowerCase().includes(lowerQuery);
-      const transcriptMatch = rec.transcript && rec.transcript.toLowerCase().includes(lowerQuery);
+      const body = rec.text || rec.transcript || '';
+      const transcriptMatch = body.toLowerCase().includes(lowerQuery);
       return titleMatch || transcriptMatch;
     });
   }

@@ -345,7 +345,7 @@ class UIManager {
 
     listEl.innerHTML = recordings
       .map((rec) => {
-        const transcript = (rec.transcript || '').trim();
+        const transcript = (rec.transcript || rec.text || '').trim();
         const dateStr = UIManager.formatDate(rec.createdAt);
         const duration = UIManager.formatTime(rec.duration || 0);
         const langIcon = rec.language === 'ja-JP' ? '🇯🇵' : '🇺🇸';
@@ -392,7 +392,7 @@ class UIManager {
     if (titleEl) titleEl.textContent = recording.title || '録音';
     if (dateEl) dateEl.textContent = UIManager.formatDate(recording.createdAt);
 
-    const transcript = (recording.transcript || '').trim();
+    const transcript = (recording.transcript || recording.text || '').trim();
 
     // 文字数カウント更新
     if (charCountEl) {

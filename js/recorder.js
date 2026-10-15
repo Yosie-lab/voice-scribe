@@ -138,7 +138,7 @@ class AudioRecorder {
   needsRecovery() {
     if (this._userStop || this.state === 'inactive') return false;
     const track = this.stream && this.stream.getAudioTracks()[0];
-    const trackLive = !!(track && track.readyState === 'live');
+    const trackLive = !!(track && track.readyState === 'live' && !track.muted);
     const rec = this.mediaRecorder;
     if (this.state === 'paused') {
       return !(rec && rec.state === 'paused' && trackLive);
@@ -157,6 +157,28 @@ class AudioRecorder {
     } catch {
       // 未対応、またはすでに停止済み
     }
+  }
+
+  /**
+   * いまメモリにある音声をコピーして返す。チャンクは消さない。
+   * @returns {{blob: Blob|null, mimeType: string}}
+   */
+  peekBlob() {
+    const mime = this.mimeType || 'audio/mp4';
+    const parts = [];
+    for (const segment of this.segments) {
+      if (segment && segment.size > 0) parts.push(segment);
+    }
+    if (this.audioChunks.length) {
+      const chunkMime = this.mimeType || this.audioChunks[0].type || mime;
+      parts.push(new Blob(this.audioChunks, { type: chunkMime }));
+    }
+    if (!parts.length) return { blob: null, mimeType: mime };
+    if (parts.length === 1) return { blob: parts[0], mimeType: parts[0].type || mime };
+    return {
+      blob: new Blob(parts, { type: parts[0].type || mime }),
+      mimeType: parts[0].type || mime
+    };
   }
 
   /**
@@ -298,9 +320,14 @@ class AudioRecorder {
       const finish = () => {
         if (settled) return;
         settled = true;
+        clearTimeout(timer);
         this._restarting = false;
         resolve();
       };
+      const timer = setTimeout(() => {
+        console.warn('MediaRecorder.stop が完了しなかったため、停止待ちを打ち切ります');
+        finish();
+      }, 1500);
       rec.onstop = finish;
       try {
         if (rec.state === 'recording' && typeof rec.requestData === 'function') {
@@ -322,6 +349,7 @@ class AudioRecorder {
       if (event.data && event.data.size > 0) {
         this.audioChunks.push(event.data);
       }
+      if (this.onChunk) this.onChunk();
     };
     recorder.onerror = (event) => {
       console.error('MediaRecorder エラー:', event.error);
