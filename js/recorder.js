@@ -356,6 +356,7 @@ class AudioRecorder {
       if (this.onError) this.onError('録音中にエラーが発生しました。');
     };
     recorder.onstop = () => {
+      // ユーザが止めるまでセッションは終わらせない。ここではチャンクを残して復帰を頼む。
       if (this._userStop || this._restarting) return;
       this._sealOpenChunks();
       if (this.onInterrupted) this.onInterrupted();

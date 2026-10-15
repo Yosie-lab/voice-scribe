@@ -511,6 +511,12 @@ liveEngine.abort = () => { disposed = true; };
 liveEngine.stop = () => { disposed = true; };
 clearing.reset();
 assert(clearing.getFullTranscript() === '', 'reset drops caption buffers');
+clearing._appendFinal('桜の花びらが舞う夜に私は静かに歌い続けているよ今夜も');
+assert(
+  countSpan(clearing.finalTranscript, '桜の花びらが舞う夜に私は静かに歌い続けているよ今夜も') === 1,
+  'clear allows the same lyric to be committed again'
+);
+clearing.reset();
 assert(disposed === false, 'reset does not stop or abort the engine');
 assert(clearing.recognition === liveEngine, 'reset keeps the recognition instance');
 assert(clearing.isListening === true && clearing.shouldRestart === true, 'reset leaves the session running');
@@ -589,10 +595,12 @@ assert(viz.includes('getSpeechPeak'), 'frame peak for short bursts');
 assert(viz.includes('_sampleSpeechPeak'), 'peak is sampled while drawing');
 assert(app.includes('usePeak'), 'desktop ja watch reads the peak');
 assert(app.includes('speechHotFlags'), 'stall does not reuse the gap peak');
+assert(!index.includes('v=66'), 'index cache bust left 66');
 assert(!index.includes('v=65'), 'index cache bust left 65');
-assert(index.includes('v=66'), 'index is v66');
-assert(sw.includes("voicescribe-v66"), 'sw cache name');
-assert(!sw.includes('voicescribe-v65'), 'old sw name gone');
+assert(index.includes('v=67'), 'index is v67');
+assert(sw.includes("voicescribe-v67"), 'sw cache name');
+assert(!sw.includes('voicescribe-v66'), 'old sw name gone');
+assert(!sw.includes('voicescribe-v65'), 'older sw name gone');
 const micCalls = (src) => (src.match(/\.getUserMedia\s*\(/g) || []).length;
 const recorderSrc = fs.readFileSync(path.join(root, 'js/recorder.js'), 'utf8');
 assert(micCalls(viz) === 0, 'visualizer does not open a mic');
@@ -651,6 +659,27 @@ assert(gesture.includes('#clear-transcript-btn'), 'gesture ignores the clear con
 assert(!gesture.includes('preventDefault'), 'gesture does not swallow the clear click');
 assert(!gesture.includes('stopPropagation'), 'gesture does not stop the clear click');
 assert(!gesture.includes('stopImmediatePropagation'), 'gesture does not stop the clear click immediately');
+assert(gesture.includes('#resume-reading-btn'), 'gesture does not steal the resume tap');
+assert(gesture.includes('needsRecovery'), 'gesture does not start recognition before a dead desktop mic');
+
+const resumeFn = methodBody(app, 'async _resumeReading() {');
+const resumeCap = resumeFn.indexOf('ensureCapture');
+const resumeFirst = resumeFn.indexOf('continueListening');
+const resumeLast = resumeFn.lastIndexOf('continueListening');
+assert(resumeFn.includes('needsRecovery'), 'resume reuses a live recorder stream');
+assert(!resumeFn.includes('getUserMedia'), 'resume does not open a second microphone');
+assert(resumeFirst !== -1 && resumeCap !== -1 && resumeFirst < resumeCap, 'iOS resume starts recognition inside the tap');
+assert(resumeLast > resumeCap, 'desktop resume starts recognition after capture');
+assert(index.includes('id="resume-reading-btn"'), 'resume button is in the page');
+assert(index.includes('>再開<'), 'resume button label');
+const css = fs.readFileSync(path.join(root, 'css/style.css'), 'utf8');
+assert(css.includes('.resume-reading-btn'), 'resume button is styled in the control deck');
+const recoverFn = methodBody(app, 'async _recoverActiveRecordingBody() {');
+assert(recoverFn && !recoverFn.includes('_stopRecording'), 'a lost mic does not end the recording');
+assert(recoverFn.includes('ensureCapture'), 'a lost mic reopens through the recorder');
+const restartNow = methodBody(transcriberSrc, '  _restartNow() {');
+assert(restartNow && !restartNow.includes('this.stop()'), 'failed recognition restarts do not end the session');
+assert(unwedge.includes('_armStopWatch'), 'stop() without onend still restarts recognition');
 
 function listeningJa() {
   const t = new Transcriber();
@@ -684,6 +713,7 @@ jaStale.recognition = {
 };
 assert(jaStale.nudge('stall') === true, 'stale ja speech stop()s so the next utterance is heard');
 assert(staleStopped === true && staleAborted === false, 'stale ja stall uses stop, not abort');
+jaStale.stop();
 
 let enAborted = false;
 const enLive = listeningJa();
@@ -836,6 +866,130 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const LINE = '桜の花びらが舞う夜に私は静かに歌い続けているよ今夜も';
+assert(Transcriber._plain(LINE).length > 24, 'lyric fixture is longer than the 24-char overlap cap');
+assert(Transcriber.repeatWindowMs > Transcriber.jaStaleStopMs, 'repeat window covers a stale stop');
+assert(Transcriber.repeatWindowMs > Transcriber.jaResultGraceMs, 'repeat window covers the late-hypothesis grace');
+assert(Transcriber.repeatWindowMs > 2200, 'repeat window is longer than the old merge window');
+
+const burst = new Transcriber();
+burst.language = 'ja-JP';
+for (let i = 0; i < 8; i++) burst._appendFinal(LINE);
+assert(countSpan(burst.finalTranscript, LINE) === 1, 'identical long finals in a row stay one line');
+
+const doubled = `${LINE}${LINE}`;
+assert(Transcriber.collapseRepeatedPhrase(doubled, 'ja-JP') === LINE, 'a final that contains the lyric twice collapses');
+assert(countSpan(appendNow('ja-JP', [doubled, doubled]), LINE) === 1, 'repeated doubled finals stay one line');
+assert(
+  Transcriber.collapseRepeatedPhrase('今日はいい天気ですね', 'ja-JP') === '今日はいい天気ですね',
+  'a normal sentence is not treated as a doubled lyric'
+);
+
+const replay = new Transcriber();
+replay.language = 'ja-JP';
+replay._appendFinal(LINE);
+replay._appendFinal('川を越えて行く');
+replay._appendFinal(LINE);
+assert(countSpan(replay.finalTranscript, LINE) === 1, 'the same lyric resent inside the window is dropped');
+assert(replay.finalTranscript.includes('川を越えて行く'), 'a different line between resends is kept');
+replay._recentNorms.forEach((row) => {
+  row.at = Date.now() - (Transcriber.repeatWindowMs + 500);
+});
+replay._lastChunkAt = Date.now() - (Transcriber.repeatWindowMs + 500);
+replay._appendFinal(LINE);
+assert(countSpan(replay.finalTranscript, LINE) === 2, 'the same lyric after the window is a real reprise');
+
+const tailResend = new Transcriber();
+tailResend.language = 'ja-JP';
+tailResend._appendFinal('明日の会議は三時から開始で資料は事前に共有してください');
+const tailOnce = tailResend.finalTranscript;
+tailResend._lastChunkAt = Date.now() - 6000;
+tailResend._recentNorms.forEach((row) => {
+  row.at = Date.now() - 6000;
+});
+tailResend._ingestResult({
+  resultIndex: 0,
+  results: [hypothesis('資料は事前に共有してください', true)]
+});
+assert(tailResend.finalTranscript === tailOnce, 'a resent tail of a long line is not appended past the old 2.2s window');
+
+const sung = new Transcriber();
+sung.language = 'ja-JP';
+sung._isIOS = false;
+assert(sung.start() === true, 'sung session starts');
+sung.recognition.onresult({ resultIndex: 0, results: [hypothesis(LINE, true)] });
+assert(countSpan(sung.finalTranscript, LINE) === 1, 'sung lyric lands once');
+sung._lastChunkAt = Date.now() - 6000;
+sung._recentNorms.forEach((row) => {
+  row.at = Date.now() - 6000;
+});
+sung._restartNow();
+sung.recognition.onresult({ resultIndex: 0, results: [hypothesis(LINE, true)] });
+assert(countSpan(sung.finalTranscript, LINE) === 1, 'stop/restart reemit of the same lyric is dropped');
+assert(sung.shouldRestart === true && sung.isListening === true, 'restart keeps the recognition session');
+sung.stop();
+
+const resumeUi = new Transcriber();
+resumeUi.language = 'ja-JP';
+resumeUi._isIOS = false;
+assert(resumeUi.start() === true, 'resume visibility session starts');
+assert(resumeUi.needsResume() === false, 'running recognition hides 再開');
+resumeUi._engineRunning = false;
+resumeUi._restartTimer = setTimeout(() => {}, 60000);
+resumeUi._restartDelayMs = 35;
+assert(resumeUi.needsResume() === false, 'a short auto restart hides 再開');
+resumeUi._restartDelayMs = Transcriber.jaResultGraceMs;
+assert(resumeUi.needsResume() === true, 'a long recognition gap shows 再開');
+clearTimeout(resumeUi._restartTimer);
+resumeUi._restartTimer = null;
+resumeUi._engineRunning = true;
+assert(resumeUi.needsResume() === false, 'recognition running again hides 再開');
+resumeUi.stop();
+assert(resumeUi.needsResume() === false, 'user stop hides 再開');
+
+const abortSoak = new Transcriber();
+abortSoak.language = 'ja-JP';
+abortSoak._isIOS = false;
+assert(abortSoak.start() === true, 'abort soak starts');
+for (let i = 0; i < 12; i++) {
+  abortSoak._engineRunning = true;
+  abortSoak.recognition.onerror({ error: 'aborted' });
+}
+assert(abortSoak.shouldRestart === true && abortSoak.isListening === true, 'repeated aborted errors do not end recognition');
+assert(abortSoak.needsResume() === true, 'repeated aborts surface 再開');
+abortSoak.finalTranscript = LINE;
+abortSoak.stop();
+assert(abortSoak.finalTranscript.includes(LINE), 'giving up is not allowed to clear the caption');
+
+const denied = new Transcriber();
+denied.language = 'ja-JP';
+denied._isIOS = false;
+assert(denied.start() === true, 'not-allowed session starts');
+denied.finalTranscript = '残す歌詞';
+denied.recognition.onerror({ error: 'not-allowed' });
+assert(denied.isListening === true && denied.shouldRestart === true, 'not-allowed during a session keeps listening armed');
+assert(denied.needsResume() === true, 'not-allowed shows 再開');
+assert(denied.finalTranscript.includes('残す歌詞'), 'not-allowed keeps the caption');
+denied.stop();
+
+const iosResume = new Transcriber();
+iosResume._isIOS = true;
+iosResume.language = 'ja-JP';
+iosResume.finalTranscript = '残しておく歌詞';
+assert(iosResume.continueListening() === true, 'iOS resume starts');
+assert(iosResume.recognition.continuous === false, 'iOS resume stays utterance mode');
+assert(iosResume.finalTranscript.includes('残しておく歌詞'), 'iOS resume keeps committed text');
+iosResume.stop();
+
+const deskResume = new Transcriber();
+deskResume._isIOS = false;
+deskResume.language = 'ja-JP';
+deskResume.finalTranscript = LINE;
+assert(deskResume.continueListening() === true, 'desktop resume starts');
+assert(deskResume.recognition.continuous === true, 'desktop ja resume stays continuous');
+assert(deskResume.finalTranscript.includes(LINE), 'desktop resume keeps committed text');
+deskResume.stop();
+
 async function proveSpeechEndFlush() {
   const saved = Transcriber.jaStaleStopMs;
   Transcriber.jaStaleStopMs = 60;
@@ -906,7 +1060,33 @@ async function proveSpeechEndFlush() {
   }
 }
 
-proveSpeechEndFlush().then(() => {
+async function proveStopWatch() {
+  const saved = Transcriber.stopWatchMs;
+  Transcriber.stopWatchMs = 30;
+  try {
+    const wedged = new Transcriber();
+    wedged.language = 'ja-JP';
+    wedged._isIOS = false;
+    assert(wedged.start() === true, 'wedged stop-watch session starts');
+    wedged.finalTranscript = LINE;
+    wedged._gotHypothesis = true;
+    const first = wedged.recognition;
+    assert(wedged._unwedgeJaSession() === true, 'unwedge still stop()s');
+    assert(first.stopped === true && first.aborted === false, 'unwedge watch uses stop, not abort');
+    await wait(160);
+    assert(wedged.recognition !== first, 'missing onend still restarts recognition');
+    assert(wedged.isListening === true && wedged.shouldRestart === true, 'the watchdog does not end the session');
+    assert(wedged.isEngineRunning() === true, 'the restarted engine is running');
+    assert(wedged.finalTranscript.includes(LINE), 'the watchdog keeps the caption');
+    wedged.stop();
+  } finally {
+    Transcriber.stopWatchMs = saved;
+  }
+}
+
+proveSpeechEndFlush()
+  .then(() => proveStopWatch())
+  .then(() => {
 console.log('\n--- summary ---');
 rows.forEach((row) => {
   console.log(`${row.changed ? 'CHANGED' : 'SAME   '} ${row.name}`);
