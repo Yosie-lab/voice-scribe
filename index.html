@@ -13,13 +13,13 @@
   <title>VoiceScribe — 文字起こしボイスレコーダー</title>
 
   <!-- PWAマニフェスト -->
-  <link rel="manifest" href="manifest.json?v=65">
+  <link rel="manifest" href="manifest.json?v=66">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" sizes="192x192" href="icons/icon-192.png">
   <link rel="apple-touch-icon" sizes="512x512" href="icons/icon-512.png">
 
   <!-- スタイルシート -->
-  <link rel="stylesheet" href="css/style.css?v=65">
+  <link rel="stylesheet" href="css/style.css?v=66">
 
   <!-- ファビコン -->
   <link rel="icon" href="icons/icon-192.png" type="image/png">
@@ -97,6 +97,8 @@
           <span class="transcript-title-label">📝 リアルタイム文字起こし</span>
           <div class="header-bar-actions">
             <button class="action-pill-btn" id="quick-copy-btn" title="テキストをコピー">📋 コピー</button>
+            <button class="action-pill-btn continue-pill" id="continue-recording-btn" title="同じ録音の続きを録る" style="display:none;">続きを録音</button>
+            <button class="action-pill-btn" id="draft-play-btn" title="保存した音声を再生" style="display:none;">再生</button>
             <button class="action-pill-btn" id="live-obsidian-btn" title="ObsidianのInboxに保存" aria-label="Obsidianに保存" style="display:none;">📥 Obsidianに保存</button>
             <button class="action-pill-btn" id="clear-transcript-btn" title="クリア" style="display:none;">クリア</button>
           </div>
@@ -309,13 +311,13 @@
   </div>
 
   <!-- ===== JavaScript モジュール ===== -->
-  <script src="js/storage.js?v=65"></script>
-  <script src="js/recorder.js?v=65"></script>
-  <script src="js/transcriber.js?v=65"></script>
-  <script src="js/whisper.js?v=65"></script>
-  <script src="js/visualizer.js?v=65"></script>
-  <script src="js/obsidian.js?v=65"></script>
-  <script src="js/ui.js?v=65"></script>
-  <script src="js/app.js?v=65"></script>
+  <script src="js/storage.js?v=66"></script>
+  <script src="js/recorder.js?v=66"></script>
+  <script src="js/transcriber.js?v=66"></script>
+  <script src="js/whisper.js?v=66"></script>
+  <script src="js/visualizer.js?v=66"></script>
+  <script src="js/obsidian.js?v=66"></script>
+  <script src="js/ui.js?v=66"></script>
+  <script src="js/app.js?v=66"></script>
 </body>
 </html>

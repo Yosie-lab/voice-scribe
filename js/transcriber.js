@@ -343,6 +343,7 @@ class Transcriber {
     this._commitPendingInterim();
     if (this._hold || document.visibilityState === 'hidden') {
       if (this.shouldRestart && this.isListening) this._resumeWhenVisible = true;
+      if (this.onNeedsCheckpoint) this.onNeedsCheckpoint();
       return;
     }
     if (this.shouldRestart && this.isListening) {
@@ -635,6 +636,7 @@ class Transcriber {
   _deferWhileHidden() {
     if (this._hold || document.visibilityState === 'hidden') {
       if (this.shouldRestart && this.isListening) this._resumeWhenVisible = true;
+      if (this.onNeedsCheckpoint) this.onNeedsCheckpoint();
       return true;
     }
     return false;

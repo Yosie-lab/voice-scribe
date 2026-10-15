@@ -409,6 +409,11 @@ body::before {
   max-width: 100%;
 }
 
+.continue-pill {
+  border-color: rgba(0, 240, 255, 0.55);
+  background: rgba(0, 240, 255, 0.18);
+}
+
 .action-pill-btn {
   flex-shrink: 0;
   padding: 3px 8px;

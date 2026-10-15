@@ -30,6 +30,30 @@ class VoiceScribeApp {
     this._recovering = false;
     this._whisperBusy = false;
     this._stopPromise = null;
+    this._sessionCreatedAt = 0;
+    this._bestTranscript = '';
+    this._checkpointHasAudio = false;
+    this._checkpointBlob = null;
+    this._checkpointing = false;
+    this._checkpointGen = 0;
+    this._saveChain = null;
+    this._starting = false;
+    this._draftId = null;
+    this._draftBlob = null;
+    this._draftMime = '';
+    this._draftTranscript = '';
+    this._draftCreatedAt = 0;
+    this._draftLanguage = 'ja-JP';
+    this._draftDuration = 0;
+    this._draftSegments = null;
+    this._priorParts = null;
+    this._priorMime = '';
+    this._priorDuration = 0;
+    this._resumeBase = '';
+    this._resumePrefix = '';
+    this._draftAudio = null;
+    this._draftAudioUrl = null;
+    this._draftPlayToken = 0;
     this._speechWatch = null;
     this._speechProfile = null;
     this._speechFloor = 0.012;
@@ -68,6 +92,13 @@ class VoiceScribeApp {
 
       // 音声認識対応状況の確認
       this._checkTranscriptionSupport();
+
+      const restored = await this._restoreLockCheckpoint();
+      if (restored) {
+        this._rememberDraft(restored);
+        const restoredText = restored.text || restored.transcript || '';
+        if (restoredText) this.ui.updateTranscript(restoredText, '', false);
+      }
 
       // 録音一覧の初回読み込み
       await this._refreshRecordingsList();
@@ -146,15 +177,36 @@ class VoiceScribeApp {
     };
     this.recorder.onInterrupted = () => {
       if (!this.isRecording || this._userPaused) return;
+      this._checkpointRecording();
       if (document.visibilityState === 'hidden') {
         this._backgrounded = true;
         return;
       }
       this._scheduleForegroundWork();
     };
+    this.recorder.onChunk = () => {
+      if (!this.isRecording || !this._backgrounded) return;
+      this._checkpointRecording();
+    };
+    this.transcriber.onNeedsCheckpoint = () => {
+      if (!this.isRecording) return;
+      this._checkpointRecording();
+    };
     this.transcriber.onError = (message) => {
       this.ui.showToast(message, 'error');
     };
+
+    const continueBtn = document.getElementById('continue-recording-btn');
+    if (continueBtn) {
+      continueBtn.addEventListener('click', () => {
+        if (this.isRecording || this._stopPromise || this._starting) return;
+        this._startRecording({ continueDraft: true });
+      });
+    }
+    const draftPlayBtn = document.getElementById('draft-play-btn');
+    if (draftPlayBtn) {
+      draftPlayBtn.addEventListener('click', () => this._toggleDraftPlayback());
+    }
   }
 
   /**
@@ -177,6 +229,10 @@ class VoiceScribeApp {
    * @private
    */
   async _toggleRecording() {
+    if (this._stopPromise) {
+      await this._stopPromise;
+      return;
+    }
     if (this.isRecording) {
       await this._stopRecording();
     } else {
@@ -188,15 +244,73 @@ class VoiceScribeApp {
    * 録音を開始（iOS Safari同期起動＆完全フェイルセーフ）
    * @private
    */
-  async _startRecording() {
+  async _startRecording(options) {
+    if (this._stopPromise) await this._stopPromise;
+    if (this.isRecording || this._starting) return;
+    this._starting = true;
+    const continueDraft = !!(options && options.continueDraft);
+    try {
+    const restored = await this._restoreLockCheckpoint();
+    if (restored) this._rememberDraft(restored);
+    this._stopDraftPlayback();
+
+    let prior = null;
+    if (continueDraft && this._draftId) {
+      try {
+        prior = await this.storage.getById(this._draftId);
+      } catch (error) {
+        console.warn('続き録音の読み込みに失敗:', error);
+      }
+      if (!prior) {
+        prior = {
+          id: this._draftId,
+          text: this._draftTranscript,
+          transcript: this._draftTranscript,
+          audioBlob: this._draftBlob,
+          mimeType: this._draftMime,
+          duration: this._draftDuration,
+          durationMs: (this._draftDuration || 0) * 1000,
+          createdAt: this._draftCreatedAt || Date.now(),
+          language: this._draftLanguage,
+          segments: this._draftSegments
+        };
+      }
+    }
+
     this.isRecording = true;
     this._userPaused = false;
     this._recoverAttempts = 0;
-    this.currentRecordingId = StorageManager.generateId();
+    this._checkpointBlob = null;
+    if (prior) {
+      const parts = this._audioParts(prior);
+      this.currentRecordingId = prior.id;
+      this._sessionCreatedAt = prior.createdAt || this._draftCreatedAt || Date.now();
+      this._priorParts = parts;
+      this._priorMime = prior.mimeType || '';
+      this._priorDuration = prior.duration || Math.round((prior.durationMs || 0) / 1000);
+      this._checkpointHasAudio = parts.length > 0;
+      this._checkpointBlob = prior.audioBlob || parts[0] || null;
+      const base = this._longerText(prior.text || prior.transcript, this._draftTranscript);
+      this._resumeBase = base;
+      this._resumePrefix = base ? `${base}\n\n— 続き ${this._resumeStamp()} —\n` : '';
+      this._bestTranscript = this._resumePrefix || base;
+    } else {
+      this.currentRecordingId = StorageManager.generateId();
+      this._sessionCreatedAt = Date.now();
+      this._priorParts = null;
+      this._priorMime = '';
+      this._priorDuration = 0;
+      this._resumeBase = '';
+      this._resumePrefix = '';
+      this._bestTranscript = '';
+      this._checkpointHasAudio = false;
+    }
     this.ui.setRecordingStatus('recording');
     this._acquireWakeLock();
+    this.ui.updateTimer(this._priorDuration || 0);
     this._startTimer();
-    this.ui.updateTranscript('', '', true);
+    this._syncDraftControls();
+    this.ui.updateTranscript(this._resumePrefix || '', '', true);
 
     // プレースホルダーを非表示
     const placeholderEl = document.getElementById('transcript-placeholder');
@@ -218,6 +332,7 @@ class VoiceScribeApp {
       } catch (e) {
         console.warn('SpeechRecognition start warning:', e);
       }
+      this._primeContinuedTranscript();
     }
 
     try {
@@ -245,6 +360,7 @@ class VoiceScribeApp {
       } catch (e) {
         console.warn('SpeechRecognition start warning:', e);
       }
+      this._primeContinuedTranscript();
     }
 
     if (!this.isRecording) return;
@@ -256,16 +372,21 @@ class VoiceScribeApp {
       btn.style.opacity = '0.5';
     });
 
-    this.ui.showToast('🎙️ 録音中（お話しください）', 'success', 2000);
+    this.ui.showToast(prior ? '🎙️ 続きを録音中' : '🎙️ 録音中（お話しください）', 'success', 2000);
+    } finally {
+      this._starting = false;
+    }
   }
 
   /**
    * 録音を停止して保存（Groq Whisper連携付き）
    * @private
    */
-  async _stopRecording() {
+  async _stopRecording(options) {
     if (this._stopPromise) return this._stopPromise;
-    this._stopPromise = this._stopRecordingBody().finally(() => {
+    const interrupted = !!(options && options.interrupted);
+    const quiet = !!(options && options.quiet);
+    this._stopPromise = this._stopRecordingBody(interrupted, quiet).finally(() => {
       this._stopPromise = null;
     });
     return this._stopPromise;
@@ -276,49 +397,80 @@ class VoiceScribeApp {
    * 途中で失敗しても、Clear / 再生が触れる待機状態に戻す。
    * @private
    */
-  async _stopRecordingBody() {
+  async _stopRecordingBody(interrupted, quiet) {
     const uiEpoch = this._transcriptEpoch;
     this._stopSpeechWatch();
     this._recoverGen++;
+    this._checkpointGen++;
     if (this._recoverTimer) {
       clearTimeout(this._recoverTimer);
       this._recoverTimer = null;
     }
 
-    let transcript = (this.transcriber.getFullTranscript() || '').trim();
-    if (!transcript) {
-      const textEl = document.getElementById('transcript-text');
-      if (textEl) {
-        transcript = (textEl.innerText || textEl.textContent || '').trim();
-      }
-    }
-
+    let transcript = this._readLiveTranscript();
+    const language = this._activeLanguage();
+    const sessionId = this.currentRecordingId;
+    const createdAt = this._sessionCreatedAt || Date.now();
+    const priorParts = (this._priorParts || []).filter((blob) => blob && blob.size);
+    const priorDuration = this._priorDuration || 0;
+    const peeked = this.recorder.peekBlob();
+    // stop() が onstop を待って固まっても、先に同じ ID へ書いて UI を戻す。
+    this._checkpointRecording();
     this.transcriber.stop();
 
-    let audioBlob = null;
-    let audioMime = 'audio/mp4';
-    let duration = this.recorder.getElapsedTime() || 0;
+    let newTake = peeked.blob;
+    let audioMime = peeked.mimeType || 'audio/mp4';
+    let segmentDuration = this.recorder.getElapsedTime() || 0;
+    this._finishRecordingUi(transcript, uiEpoch);
+
     try {
       const recResult = await this.recorder.stop();
-      if (recResult) {
-        audioBlob = recResult.blob;
-        audioMime = recResult.mimeType || 'audio/mp4';
-        if (typeof recResult.duration === 'number') duration = recResult.duration;
+      if (recResult && recResult.blob) {
+        newTake = recResult.blob;
+        audioMime = recResult.mimeType || audioMime;
+        if (typeof recResult.duration === 'number') segmentDuration = recResult.duration;
       }
     } catch (e) {
       console.warn('Recorder stop warning:', e);
     }
 
-    this._finishRecordingUi(transcript, uiEpoch);
-
     try {
-      const activeLangBtn = document.querySelector('.lang-btn.active');
-      const language = activeLangBtn ? activeLangBtn.dataset.lang : 'ja-JP';
+      let parts = priorParts.slice();
+      if (newTake) parts.push(newTake);
+      const kept = await this._savedSession(sessionId);
+      if (!parts.length && kept) parts = this._audioParts(kept);
+      transcript = this._collapseResumeTranscript(transcript);
+      if (kept) transcript = this._longerText(transcript, kept.text || kept.transcript);
+      transcript = this._collapseResumeTranscript(transcript);
 
-      if (transcript || audioBlob) {
+      let audioBlob = parts[0] || (kept && kept.audioBlob) || null;
+      let segments = null;
+      let duration = priorDuration + (newTake ? segmentDuration : 0);
+      if (!newTake && kept) duration = Math.max(duration, kept.duration || 0);
+      let joined = parts.length <= 1;
+
+      if (parts.length > 1) {
+        try {
+          audioBlob = await AudioRecorder.concatToWav(parts);
+          audioMime = 'audio/wav';
+          joined = true;
+        } catch (error) {
+          console.warn('続きの音声を結合できませんでした:', error);
+          audioBlob = parts[0];
+          audioMime = (audioBlob && audioBlob.type) || this._priorMime || audioMime;
+          segments = parts;
+          this.ui.showToast('続きの音声を1本にできなかったため、区切ったまま保存しました。', 'info', 4000);
+        }
+      } else if (audioBlob) {
+        audioMime = audioBlob.type || audioMime;
+      } else if (kept && kept.mimeType) {
+        audioMime = kept.mimeType;
+      }
+
+      if (transcript || audioBlob || (segments && segments.length)) {
         let finalTranscript = transcript;
 
-        if (this.whisper.hasApiKey() && audioBlob) {
+        if (!interrupted && joined && this.whisper.hasApiKey() && audioBlob) {
           this._whisperBusy = true;
           try {
             this.ui.showWhisperOverlay();
@@ -339,23 +491,34 @@ class VoiceScribeApp {
           finalTranscript += '。';
         }
 
-        const recording = {
-          id: this.currentRecordingId,
+        const recording = await this._enqueueSave(() => this.storage.save({
+          id: sessionId,
           title: this._generateTitle(finalTranscript, language),
           audioBlob: audioBlob,
           mimeType: audioMime,
+          segments: segments,
+          text: finalTranscript,
           transcript: finalTranscript,
           language: language,
           duration: duration,
-          createdAt: Date.now()
-        };
-
-        await this.storage.save(recording);
+          durationMs: duration * 1000,
+          audioKey: sessionId,
+          createdAt: createdAt
+        }));
+        this._rememberDraft(recording);
+        this._clearCheckpointMeta(sessionId);
         await this._refreshRecordingsList();
-        this.ui.showToast('✅ 録音と文字起こしを保存しました', 'success');
+        if (interrupted && !quiet) {
+          this.ui.showToast('録音が中断されました。ここまでを保存しました。続きを録音できます。', 'info', 4000);
+        } else if (!interrupted) {
+          this.ui.showToast('✅ 録音と文字起こしを保存しました', 'success');
+        }
         if (uiEpoch === this._transcriptEpoch) {
           this.ui.updateTranscript(finalTranscript, '', false);
+          this._syncDraftControls();
         }
+      } else {
+        this._syncDraftControls();
       }
 
       this.ui.updateTimer(0);
@@ -364,6 +527,7 @@ class VoiceScribeApp {
       this._finishRecordingUi(transcript, uiEpoch);
       this._whisperBusy = false;
       if (this.ui.hideWhisperOverlay) this.ui.hideWhisperOverlay();
+      this._syncDraftControls();
     }
   }
 
@@ -403,6 +567,378 @@ class VoiceScribeApp {
       document.removeEventListener('pointerdown', this._recognitionGesture, true);
       this._recognitionGesture = null;
     }
+    this._syncDraftControls();
+  }
+
+  /**
+   * start() は確定テキストを空にする。続き録音の接頭辞はそのあとで戻す。
+   * @private
+   */
+  _primeContinuedTranscript() {
+    if (!this._resumePrefix) return;
+    this.transcriber.finalTranscript = this._resumePrefix;
+    this.transcriber.interimTranscript = '';
+    this._bestTranscript = this._longerText(this._bestTranscript, this._resumePrefix);
+    if (this.isRecording) this.ui.updateTranscript(this._resumePrefix, '', true);
+  }
+
+  /**
+   * @returns {string}
+   * @private
+   */
+  _resumeStamp() {
+    const now = new Date();
+    const h = String(now.getHours()).padStart(2, '0');
+    const m = String(now.getMinutes()).padStart(2, '0');
+    return `${h}:${m}`;
+  }
+
+  /**
+   * @param {string} live
+   * @returns {string}
+   * @private
+   */
+  _collapseResumeTranscript(live) {
+    const text = (live || '').trim();
+    const base = (this._resumeBase || '').trim();
+    const prefix = (this._resumePrefix || '').trim();
+    if (!prefix) return text;
+    if (!text || text === base || text === prefix) return base;
+    if (text.startsWith(prefix) && !text.slice(prefix.length).trim()) return base;
+    return text;
+  }
+
+  /**
+   * @param {string} left
+   * @param {string} right
+   * @returns {string}
+   * @private
+   */
+  _longerText(left, right) {
+    const a = (left || '').trim();
+    const b = (right || '').trim();
+    return b.length > a.length ? b : a;
+  }
+
+  /**
+   * @returns {string}
+   * @private
+   */
+  _activeLanguage() {
+    const activeLangBtn = document.querySelector('.lang-btn.active');
+    return activeLangBtn ? activeLangBtn.dataset.lang : 'ja-JP';
+  }
+
+  /**
+   * @returns {string}
+   * @private
+   */
+  _readLiveTranscript() {
+    let transcript = (this.transcriber.getFullTranscript() || '').trim();
+    if (!transcript) {
+      const textEl = document.getElementById('transcript-text');
+      if (textEl) transcript = (textEl.innerText || textEl.textContent || '').trim();
+    }
+    transcript = this._longerText(transcript, this._bestTranscript);
+    if (transcript) this._bestTranscript = transcript;
+    return transcript;
+  }
+
+  /**
+   * @param {Object|null} recording
+   * @returns {Blob[]}
+   * @private
+   */
+  _audioParts(recording) {
+    if (!recording) return [];
+    if (recording.segments && recording.segments.length) {
+      return recording.segments.filter((blob) => blob && blob.size);
+    }
+    return recording.audioBlob && recording.audioBlob.size ? [recording.audioBlob] : [];
+  }
+
+  /**
+   * @param {Object} recording
+   * @private
+   */
+  _rememberDraft(recording) {
+    if (!recording || !recording.id) return;
+    this._draftId = recording.id;
+    this._draftBlob = recording.audioBlob || null;
+    this._draftMime = recording.mimeType || '';
+    this._draftTranscript = recording.text || recording.transcript || '';
+    this._draftCreatedAt = recording.createdAt || 0;
+    this._draftLanguage = recording.language || 'ja-JP';
+    this._draftDuration = recording.duration || Math.round((recording.durationMs || 0) / 1000);
+    this._draftSegments = (recording.segments || []).filter((blob) => blob && blob.size);
+    this._priorParts = null;
+    this._priorMime = '';
+    this._priorDuration = 0;
+    this._resumeBase = '';
+    this._resumePrefix = '';
+    this._syncDraftControls();
+  }
+
+  /**
+   * @private
+   */
+  _syncDraftControls() {
+    const continueBtn = document.getElementById('continue-recording-btn');
+    const playBtn = document.getElementById('draft-play-btn');
+    const idle = !this.isRecording;
+    const parts = this._draftSegments && this._draftSegments.length
+      ? this._draftSegments
+      : (this._draftBlob ? [this._draftBlob] : []);
+    if (continueBtn) continueBtn.style.display = idle && this._draftId ? 'inline-flex' : 'none';
+    if (playBtn) playBtn.style.display = idle && parts.length ? 'inline-flex' : 'none';
+  }
+
+  /**
+   * @private
+   */
+  _toggleDraftPlayback() {
+    if (this.isRecording) return;
+    if (this._draftAudio && !this._draftAudio.paused) {
+      this._stopDraftPlayback();
+      return;
+    }
+    const parts = this._draftSegments && this._draftSegments.length
+      ? this._draftSegments.filter((blob) => blob && blob.size)
+      : (this._draftBlob ? [this._draftBlob] : []);
+    if (!parts.length) return;
+    const token = ++this._draftPlayToken;
+    const playBtn = document.getElementById('draft-play-btn');
+    const playAt = (index) => {
+      if (token !== this._draftPlayToken) return;
+      if (index >= parts.length) {
+        this._stopDraftPlayback();
+        return;
+      }
+      if (this._draftAudio) {
+        try { this._draftAudio.pause(); } catch { /* 停止済み */ }
+      }
+      if (this._draftAudioUrl) URL.revokeObjectURL(this._draftAudioUrl);
+      const url = URL.createObjectURL(parts[index]);
+      const audio = new Audio(url);
+      this._draftAudio = audio;
+      this._draftAudioUrl = url;
+      audio.onended = () => playAt(index + 1);
+      audio.onerror = () => this._stopDraftPlayback();
+      audio.play().catch(() => this._stopDraftPlayback());
+      if (playBtn) playBtn.textContent = '停止';
+    };
+    playAt(0);
+  }
+
+  /**
+   * @private
+   */
+  _stopDraftPlayback() {
+    this._draftPlayToken++;
+    if (this._draftAudio) {
+      try { this._draftAudio.pause(); } catch { /* 停止済み */ }
+      this._draftAudio = null;
+    }
+    if (this._draftAudioUrl) {
+      URL.revokeObjectURL(this._draftAudioUrl);
+      this._draftAudioUrl = null;
+    }
+    const playBtn = document.getElementById('draft-play-btn');
+    if (playBtn) playBtn.textContent = '再生';
+  }
+
+  /**
+   * ロックや終了の前に、同じ録音 ID へ音声と文字起こしを書く。
+   * テキストは localStorage、音声 Blob は IndexedDB。Blob は localStorage に入れない。
+   * @private
+   */
+  _checkpointRecording() {
+    if (this._checkpointing || !this.isRecording || !this.currentRecordingId) return;
+    this._checkpointing = true;
+    const gen = ++this._checkpointGen;
+    try {
+      this.recorder.flush();
+      const transcript = this._collapseResumeTranscript(this._readLiveTranscript());
+      const peeked = this.recorder.peekBlob();
+      if (peeked.blob) this._checkpointBlob = peeked.blob;
+      const prior = (this._priorParts || []).filter((blob) => blob && blob.size);
+      const fresh = peeked.blob || (!prior.length ? this._checkpointBlob : null);
+      const parts = fresh ? prior.concat([fresh]) : prior.slice();
+      if (!transcript && !parts.length) return;
+
+      const language = this._activeLanguage();
+      const createdAt = this._sessionCreatedAt || Date.now();
+      const added = fresh ? (this.recorder.getElapsedTime() || 0) : 0;
+      const duration = (this._priorDuration || 0) + added;
+      const meta = {
+        id: this.currentRecordingId,
+        title: this._generateTitle(transcript, language),
+        text: transcript,
+        transcript: transcript,
+        language: language,
+        duration: duration,
+        durationMs: duration * 1000,
+        createdAt: createdAt,
+        updatedAt: Date.now(),
+        audioKey: this.currentRecordingId,
+        mimeType: (parts[0] && parts[0].type) || this._priorMime || peeked.mimeType || 'audio/mp4'
+      };
+      try {
+        localStorage.setItem('voicescribe-lock-checkpoint', JSON.stringify(meta));
+      } catch (error) {
+        console.warn('文字起こしの退避に失敗:', error);
+      }
+
+      if (!parts.length && this._checkpointHasAudio) return;
+
+      const audioBlob = parts[0] || null;
+      const record = Object.assign({}, meta, {
+        audioBlob: audioBlob,
+        segments: parts.length > 1 ? parts : null
+      });
+      this._enqueueSave(async () => {
+        if (gen !== this._checkpointGen) return;
+        await this.storage.save(record);
+        if (gen !== this._checkpointGen) return;
+        if (audioBlob) this._checkpointHasAudio = true;
+        this._refreshRecordingsList();
+      }).catch((error) => {
+        console.warn('中断チェックポイントの保存に失敗:', error);
+      });
+    } finally {
+      this._checkpointing = false;
+    }
+  }
+
+  /**
+   * @param {string} id
+   * @private
+   */
+  _clearCheckpointMeta(id) {
+    try {
+      const raw = localStorage.getItem('voicescribe-lock-checkpoint');
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (!data || !id || data.id === id) localStorage.removeItem('voicescribe-lock-checkpoint');
+    } catch {
+      // メタが読めなくても本体は IndexedDB
+    }
+  }
+
+  /**
+   * ページが閉じられたあとも、ロック前の文字起こしを履歴へ戻す。
+   * @returns {Promise<Object|null>}
+   * @private
+   */
+  async _restoreLockCheckpoint() {
+    let raw = null;
+    try {
+      raw = localStorage.getItem('voicescribe-lock-checkpoint');
+    } catch {
+      return null;
+    }
+    if (!raw) return null;
+
+    let data = null;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+    if (!data || !data.id) return null;
+
+    let existing = null;
+    try {
+      existing = await this.storage.getById(data.id);
+    } catch (error) {
+      console.warn('チェックポイントの読み込みに失敗:', error);
+      return null;
+    }
+
+    const transcript = this._longerText(data.text || data.transcript, existing && (existing.text || existing.transcript));
+    const parts = this._audioParts(existing);
+    if (!transcript && !parts.length) {
+      this._clearCheckpointMeta(data.id);
+      return null;
+    }
+
+    try {
+      const saved = await this.storage.save({
+        id: data.id,
+        title: (existing && existing.title) || data.title || this._generateTitle(transcript, data.language || 'ja-JP'),
+        audioBlob: (existing && existing.audioBlob) || parts[0] || null,
+        mimeType: (existing && existing.mimeType) || data.mimeType || 'audio/mp4',
+        segments: existing && existing.segments && existing.segments.length > 1 ? existing.segments : null,
+        text: transcript,
+        transcript: transcript,
+        language: data.language || (existing && existing.language) || 'ja-JP',
+        duration: Math.max(data.duration || 0, (existing && existing.duration) || 0),
+        durationMs: Math.max(data.durationMs || 0, (existing && existing.durationMs) || 0, Math.round(Math.max(data.duration || 0, (existing && existing.duration) || 0) * 1000)),
+        audioKey: data.audioKey || data.id,
+        createdAt: data.createdAt || (existing && existing.createdAt) || Date.now()
+      });
+      this._clearCheckpointMeta(data.id);
+      return await this._materializeAudio(saved);
+    } catch (error) {
+      console.warn('ロック中の文字起こしを復元できませんでした:', error);
+      return null;
+    }
+  }
+
+  /**
+   * @param {Object} recording
+   * @returns {Promise<Object>}
+   * @private
+   */
+  async _materializeAudio(recording) {
+    if (!recording) return recording;
+    const parts = this._audioParts(recording);
+    if (parts.length <= 1) {
+      if (parts.length === 1 && !recording.audioBlob) recording.audioBlob = parts[0];
+      if (recording.segments) {
+        recording.segments = null;
+        try { return await this.storage.save(recording); } catch { return recording; }
+      }
+      return recording;
+    }
+    try {
+      const wav = await AudioRecorder.concatToWav(parts);
+      return await this.storage.save(Object.assign({}, recording, {
+        audioBlob: wav,
+        mimeType: 'audio/wav',
+        segments: null
+      }));
+    } catch (error) {
+      console.warn('音声セグメントの結合に失敗:', error);
+      return recording;
+    }
+  }
+
+  /**
+   * @param {string} id
+   * @returns {Promise<Object|null>}
+   * @private
+   */
+  async _savedSession(id) {
+    if (!id) return null;
+    try {
+      return await this.storage.getById(id);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * チェックポイントと停止保存が同じ録音を上書きし合わないように直列化する。
+   * @param {() => Promise<*>} task
+   * @returns {Promise<*>}
+   * @private
+   */
+  _enqueueSave(task) {
+    const prev = this._saveChain || Promise.resolve();
+    const next = prev.then(task, task);
+    this._saveChain = next.then(() => {}, () => {});
+    return next;
   }
 
   /**
@@ -420,7 +956,7 @@ class VoiceScribeApp {
       }
       const target = event.target;
       // クリアは次の click に任せる。このリスナはイベントを止めない。
-      if (target && target.closest && target.closest('#record-btn, #pause-btn, #clear-transcript-btn')) return;
+      if (target && target.closest && target.closest('#record-btn, #pause-btn, #clear-transcript-btn, #continue-recording-btn, #draft-play-btn')) return;
       if (this.transcriber.isEngineRunning()) {
         document.removeEventListener('pointerdown', onPointer, true);
         this._recognitionGesture = null;
@@ -576,8 +1112,9 @@ class VoiceScribeApp {
    */
   _startTimer() {
     this._stopTimer();
+    const base = this._priorDuration || 0;
     this.timerInterval = setInterval(() => {
-      const elapsed = this.recorder.getElapsedTime();
+      const elapsed = base + (this.recorder.getElapsedTime() || 0);
       this.ui.updateTimer(elapsed);
     }, 200);
   }
@@ -619,6 +1156,7 @@ class VoiceScribeApp {
     this._backgrounded = true;
     this.recorder.flush();
     if (!this._userPaused) this.transcriber.holdForBackground();
+    this._checkpointRecording();
   }
 
   /**
@@ -638,6 +1176,9 @@ class VoiceScribeApp {
   async _onForeground() {
     this._unstickUi();
     this._recoverPlaybackAfterForeground();
+    if (this._checkpointHasAudio || this._bestTranscript || this._draftId) {
+      this._refreshRecordingsList();
+    }
     if (!this.isRecording) return;
     await this._acquireWakeLock();
     if (this._userPaused) {
@@ -997,7 +1538,8 @@ class VoiceScribeApp {
     }
 
     try {
-      const recording = await this.storage.getById(this.currentDetailId);
+      let recording = await this.storage.getById(this.currentDetailId);
+      recording = await this._materializeAudio(recording);
       if (!recording || !recording.audioBlob) {
         this.ui.showToast('音声データが保存されていないため、Whisper変換を実行できません。', 'error');
         return;
@@ -1033,11 +1575,12 @@ class VoiceScribeApp {
    */
   async _openDetail(id) {
     try {
-      const recording = await this.storage.getById(id);
+      let recording = await this.storage.getById(id);
       if (!recording) {
         this.ui.showToast('録音データが見つかりません。', 'error');
         return;
       }
+      recording = await this._materializeAudio(recording);
 
       this.currentDetailId = id;
       this._stopPlayback();
@@ -1087,8 +1630,9 @@ class VoiceScribeApp {
     if (!this.currentDetailId) return;
 
     try {
-      const recording = await this.storage.getById(this.currentDetailId);
-      if (!recording || !recording.audioBlob) {
+      let recording = await this.storage.getById(this.currentDetailId);
+      recording = await this._materializeAudio(recording);
+      if (!recording || !this._audioParts(recording).length) {
         this.ui.showToast('再生できる音声データがありません。', 'info');
         return;
       }
@@ -1371,7 +1915,8 @@ class VoiceScribeApp {
     if (!this.currentDetailId) return;
 
     try {
-      const recording = await this.storage.getById(this.currentDetailId);
+      let recording = await this.storage.getById(this.currentDetailId);
+      recording = await this._materializeAudio(recording);
       if (!recording || !recording.audioBlob) {
         this.ui.showToast('エクスポートする音声データがありません。', 'info');
         return;
