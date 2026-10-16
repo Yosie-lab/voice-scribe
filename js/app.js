@@ -21,8 +21,6 @@ class VoiceScribeApp {
     this.currentAudioUrl = null;
     this.playbackInterval = null;
     this._userPaused = false;
-    this._wakeLock = null;
-    this._wakeLockRequest = null;
     this._backgrounded = false;
     this._recoverTimer = null;
     this._recoverGen = 0;
@@ -104,7 +102,9 @@ class VoiceScribeApp {
       // 録音一覧の初回読み込み
       await this._refreshRecordingsList();
 
-      console.log('VoiceScribe 初期化完了');
+      await this._freeDeviceDisplay();
+
+      console.log('VoiceScribe 初期化完了 (v71)');
     } catch (error) {
       console.error('VoiceScribe 初期化エラー:', error);
     }
@@ -566,7 +566,7 @@ class VoiceScribeApp {
     this._backgrounded = false;
     this._stopSpeechWatch();
     this._stopCaptionWatch();
-    this._releaseWakeLock();
+    this._freeDeviceDisplay();
     this._stopTimer();
 
     if (this.visualizer) {
@@ -1271,13 +1271,15 @@ class VoiceScribeApp {
   }
 
   /**
-   * 画面ロック / 復帰。Wake Lock は自動スリープを止めるだけで、
-   * サイドボタンのロックは iOS がマイクを止める。復帰で同じセッションを付け直す。
+   * 画面ロック / 復帰。Wake Lock は使わない。サイドボタンのロックは iOS がマイクを止める。
    * @private
    */
   _bindRecordingLifecycle() {
     const onHide = () => this._onRecordingHidden();
-    const onShow = () => this._scheduleForegroundWork();
+    const onShow = () => {
+      if (!this.isRecording) this._freeDeviceDisplay();
+      this._scheduleForegroundWork();
+    };
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') onHide();
       else onShow();
@@ -1294,7 +1296,7 @@ class VoiceScribeApp {
   _onRecordingHidden() {
     if (!this.isRecording) return;
     this._backgrounded = true;
-    this._releaseWakeLock();
+    this._freeDeviceDisplay();
     this.recorder.flush();
     if (!this._userPaused) this.transcriber.holdForBackground();
     this._checkpointRecording();
@@ -1435,22 +1437,17 @@ class VoiceScribeApp {
   }
 
   /**
-   * Wake Lock は使わない。端末の手動ロック・画面回転を妨げ、PWA では OS のマイク停止も防げない。
+   * 画面スリープ固定・向き固定をアプリ側で残さない。録音中も Wake Lock は取らない。
    * @private
    */
-  async _acquireWakeLock() {
-    this._releaseWakeLock();
-  }
-
-  /**
-   * @private
-   */
-  _releaseWakeLock() {
-    const lock = this._wakeLock;
-    this._wakeLock = null;
-    this._wakeLockRequest = null;
-    if (!lock) return;
-    lock.release().catch(() => {});
+  async _freeDeviceDisplay() {
+    try {
+      if (screen.orientation && typeof screen.orientation.unlock === 'function') {
+        await screen.orientation.unlock();
+      }
+    } catch {
+      // 他アプリや OS が固定している
+    }
   }
 
   /**
@@ -2102,7 +2099,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=71');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();
