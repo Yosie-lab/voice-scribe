@@ -516,7 +516,9 @@ class Transcriber {
   holdForBackground() {
     if (!this.isListening && !this.shouldRestart) return;
     this._hold = true;
+    this._engineRunning = false;
     this._clearRestartTimer();
+    this._clearStartAckWatch();
   }
 
   /**
@@ -585,7 +587,12 @@ class Transcriber {
    */
   needsResume() {
     if (!this.shouldRestart || !this.isListening) return false;
-    if (this._hold) return false;
+    if (this._hold) {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        return this.isCaptionStalled() || this._resumeNeeded || this._resumeWhenVisible;
+      }
+      return false;
+    }
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
     if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs) return false;
     if (this._restartTimer) return false;
@@ -600,6 +607,9 @@ class Transcriber {
    */
   isCaptionStalled() {
     if (!this.shouldRestart || !this.isListening) return false;
+    if (this._hold && typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      return this.msSinceResult() >= Transcriber.captionBootMs;
+    }
     if (this._hold) return false;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
     if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs) return false;

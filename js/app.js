@@ -317,7 +317,6 @@ class VoiceScribeApp {
       this._checkpointHasAudio = false;
     }
     this.ui.setRecordingStatus('recording');
-    this._acquireWakeLock();
     this.ui.updateTimer(this._priorDuration || 0);
     this._startTimer();
     this._syncDraftControls();
@@ -1100,7 +1099,12 @@ class VoiceScribeApp {
   _syncResumeReading() {
     const btn = document.getElementById('resume-reading-btn');
     if (!btn || !this.transcriber) return;
-    const recognitionDown = this.transcriber.needsResume();
+    if (document.visibilityState === 'hidden') {
+      btn.style.display = 'none';
+      return;
+    }
+    const recognitionDown = this.transcriber.needsResume()
+      || this.transcriber.isCaptionStalled();
     const show = !!(this.isRecording && !this._userPaused && recognitionDown);
     btn.style.display = show ? 'inline-flex' : 'none';
   }
@@ -1121,7 +1125,9 @@ class VoiceScribeApp {
    */
   _checkCaptionHealth() {
     if (!this.isRecording || this._userPaused || document.visibilityState === 'hidden') return;
-    this._syncResumeReading();
+    if (this.transcriber._hold || this.transcriber._resumeWhenVisible) {
+      this.transcriber.resumeAfterBackground();
+    }
     if (!this.transcriber.isListening) {
       this.transcriber.shouldRestart = true;
       this.transcriber.isListening = true;
@@ -1288,6 +1294,7 @@ class VoiceScribeApp {
   _onRecordingHidden() {
     if (!this.isRecording) return;
     this._backgrounded = true;
+    this._releaseWakeLock();
     this.recorder.flush();
     if (!this._userPaused) this.transcriber.holdForBackground();
     this._checkpointRecording();
@@ -1314,7 +1321,6 @@ class VoiceScribeApp {
       this._refreshRecordingsList();
     }
     if (!this.isRecording) return;
-    await this._acquireWakeLock();
     if (this._userPaused) {
       this.ui.setRecordingStatus('paused');
       return;
@@ -1345,11 +1351,20 @@ class VoiceScribeApp {
     this._backgrounded = false;
 
     const captureDown = this.recorder.needsRecovery();
-    if (!wasBackground && !captureDown && this.transcriber.isEngineRunning()) {
+    if (
+      !wasBackground &&
+      !captureDown &&
+      this.transcriber.isEngineRunning() &&
+      !this.transcriber.isCaptionStalled()
+    ) {
+      this.transcriber.resumeAfterBackground();
       this._recoverAttempts = 0;
       this._startTimer();
+      this._startCaptionWatch();
+      this._startSpeechWatch();
       this.ui.setRecordingStatus('recording');
       this._syncResumeReading();
+      this._checkCaptionHealth();
       return;
     }
 
@@ -1420,32 +1435,11 @@ class VoiceScribeApp {
   }
 
   /**
-   * 録音中だけ画面の自動ロックを止める。未対応・拒否でも録音は続ける。
+   * Wake Lock は使わない。端末の手動ロック・画面回転を妨げ、PWA では OS のマイク停止も防げない。
    * @private
    */
   async _acquireWakeLock() {
-    if (!this.isRecording) return;
-    if (document.visibilityState === 'hidden') return;
-    if (!navigator.wakeLock || typeof navigator.wakeLock.request !== 'function') return;
-    if (this._wakeLock && this._wakeLock.released) this._wakeLock = null;
-    if (this._wakeLock || this._wakeLockRequest) return;
-    try {
-      this._wakeLockRequest = navigator.wakeLock.request('screen');
-      const lock = await this._wakeLockRequest;
-      this._wakeLockRequest = null;
-      if (!this.isRecording || document.visibilityState === 'hidden') {
-        try { await lock.release(); } catch { /* 無視 */ }
-        return;
-      }
-      this._wakeLock = lock;
-      lock.addEventListener('release', () => {
-        if (this._wakeLock === lock) this._wakeLock = null;
-      });
-    } catch (error) {
-      this._wakeLockRequest = null;
-      this._wakeLock = null;
-      console.warn('Wake Lock を取得できませんでした:', error);
-    }
+    this._releaseWakeLock();
   }
 
   /**
