@@ -159,7 +159,11 @@ class Transcriber {
     this._sessionStartedAt = Date.now();
     this._heardSpeechAt = 0;
     this._speechEndedAt = 0;
-    this._gotHypothesis = false;
+    if ((this.finalTranscript || '').trim() || (this.interimTranscript || '').trim()) {
+      this._gotHypothesis = true;
+    } else {
+      this._gotHypothesis = false;
+    }
     this._jaFastRestart = false;
     this._jaUnwedgeSent = false;
     this._resumeWhenVisible = false;
@@ -611,38 +615,33 @@ class Transcriber {
     this._clearStopWatch();
     this._clearJaHungWatch();
     this._clearJaSpeechEndFlush();
-    const hadHypothesis = this._gotHypothesis;
+    this._engineRunning = false;
+    const hadText = !!((this.finalTranscript || '').trim() || (this.interimTranscript || '').trim());
 
-    if (this.recognition) {
-      try {
-        this.recognition.stop();
-      } catch {
-        try {
-          this.recognition.abort();
-        } catch {
-          // すでに停止
-        }
+    // iOS は stop()→onend 待ちでジェスチャが切れる。init() の abort だけで作り直し、同期で start を数回試す。
+    const attempts = fromUserTap ? 4 : 1;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      this.init();
+      this._lastResultAt = Date.now();
+      this._sessionStartedAt = Date.now();
+      if (hadText) this._gotHypothesis = true;
+      if (this._tryStartEngine('restart')) {
+        this._resumeWhenVisible = false;
+        this._heardSpeechAt = 0;
+        this._speechEndedAt = 0;
+        this.retryCount = 0;
+        this._notifyListening();
+        return true;
       }
-      this._engineRunning = false;
     }
 
-    this.init();
-    this._lastResultAt = Date.now();
-    this._sessionStartedAt = Date.now();
-    if (hadHypothesis) this._gotHypothesis = true;
-
-    if (!this._tryStartEngine('restart')) {
-      this.retryCount++;
-      const delay = fromUserTap ? 40 : Transcriber.restartDelay('end', this._isIOS, this.language);
-      this._scheduleRestart(Math.min(2000, delay + this.retryCount * 80));
+    if (fromUserTap) {
+      this._signalResumeNeeded();
       return false;
     }
-    this._resumeWhenVisible = false;
-    this._heardSpeechAt = 0;
-    this._speechEndedAt = 0;
-    this.retryCount = 0;
-    this._notifyListening();
-    return true;
+    this.retryCount++;
+    this._scheduleRestart(Transcriber.restartDelay('end', this._isIOS, this.language));
+    return false;
   }
 
   /**
@@ -1983,6 +1982,15 @@ class Transcriber {
         if (committedNew.startsWith(nextNorm)) return true;
       }
     }
+    if (
+      nextNorm.length >= 10 &&
+      sinceChunk < Transcriber.repeatWindowMs &&
+      committedNew.length > nextNorm.length &&
+      committedNew.includes(nextNorm)
+    ) {
+      const idx = committedNew.indexOf(nextNorm);
+      if (idx === 0 || idx + nextNorm.length === committedNew.length) return true;
+    }
     return false;
   }
 
@@ -2073,6 +2081,20 @@ class Transcriber {
     ) {
       this._dropRepeated(nextNorm, now);
       return;
+    }
+
+    if (this.language === 'ja-JP') {
+      const left = (this.finalTranscript || '').trim();
+      const merged = left
+        ? Transcriber.mergeJapaneseOverlap(
+          left.replace(/[ \t\u3000]+$/g, ''),
+          next.replace(/^[ \t\u3000]+/, '')
+        )
+        : next.trim();
+      if (left && merged && this._normalize(merged) === this._normalize(left)) {
+        this._dropRepeated(nextNorm, now);
+        return;
+      }
     }
 
     this.finalTranscript = this._joinTranscript(this.finalTranscript, next);

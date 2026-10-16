@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v81';
+const APP_BUILD = 'v82';
 
 class VoiceScribeApp {
   constructor() {
@@ -172,11 +172,23 @@ class VoiceScribeApp {
       });
     }
 
-    const resumeTap = () => this._resumeReading();
+    const resumeTap = (event) => {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      this._resumeReading();
+    };
     const resumeBtn = document.getElementById('resume-reading-btn');
-    if (resumeBtn) resumeBtn.addEventListener('click', resumeTap);
+    if (resumeBtn) {
+      resumeBtn.addEventListener('pointerdown', resumeTap, true);
+      resumeBtn.addEventListener('click', (e) => e.preventDefault());
+    }
     const resumeHeaderBtn = document.getElementById('resume-reading-header-btn');
-    if (resumeHeaderBtn) resumeHeaderBtn.addEventListener('click', resumeTap);
+    if (resumeHeaderBtn) {
+      resumeHeaderBtn.addEventListener('pointerdown', resumeTap, true);
+      resumeHeaderBtn.addEventListener('click', (e) => e.preventDefault());
+    }
     this.transcriber.onListeningChange = () => {
       this._syncResumeReading();
     };
@@ -1145,10 +1157,18 @@ class VoiceScribeApp {
     const ios = this.transcriber.startBeforeRecorder;
 
     // iOS はジェスチャ同期のうちに必ず付け直す（engineRunning のゾンビでも）。
-    this.transcriber.manualResumeListening(true);
-    this.ui.showToast('🎙️ 文字起こしを再開しています', 'info', 2000);
+    const kicked = this.transcriber.manualResumeListening(true);
     this._recoverAttempts = 0;
+    this._startCaptionWatch();
+    this._startSpeechWatch();
     this._syncResumeReading();
+    if (!kicked) {
+      this.ui.showToast('再開できませんでした。もう一度「再開」をタップしてください', 'error', 3500);
+    } else {
+      setTimeout(() => {
+        this.ui.showToast('🎙️ 文字起こしを再開しました。話してください', 'success', 2500);
+      }, 0);
+    }
 
     let stream = this.recorder.stream;
     const captureDown = this.recorder.needsRecovery();
@@ -1569,7 +1589,7 @@ class VoiceScribeApp {
       '・<b>横画面</b>にする: コントロールセンター → 「画面の向きをロック」を OFF にしてから端末を横に。<br>',
       '・<b>ホーム画面</b>から起動している場合: アイコンを削除 → Safari で ',
       '<a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener">yosie-lab.github.io/voice-scribe</a>',
-      ' を開く → ⚙️ でビルド v81 を確認 → 共有 → ホーム画面に追加。',
+      ' を開く → ⚙️ でビルド v82 を確認 → 共有 → ホーム画面に追加。',
       '<br>今朝のアップデートで向きがおかしくなった場合も、上と同じ手順で古いホーム画面アイコンを消してください。'
     ].join('');
   }
@@ -2256,7 +2276,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=81');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=82');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();
