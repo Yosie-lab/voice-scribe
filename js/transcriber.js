@@ -66,6 +66,8 @@ class Transcriber {
     this._lastInterimAt = 0;
     this._lastInterimNorm = '';
     this._stallReviveCount = 0;
+    this._lastCaptionChangeAt = 0;
+    this._captionFingerprint = '';
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
@@ -199,8 +201,8 @@ class Transcriber {
     this.retryCount = 0;
     this._contentionRestarts = 0;
     this._captureErrorNotified = false;
-    this._lastResultAt = Date.now();
-    this._stallReviveCount = 0;
+    const beforeFinal = this.finalTranscript;
+    const beforeInterimNorm = this._normalize(this.interimTranscript);
 
     let currentInterim = '';
     let currentFinal = '';
@@ -272,6 +274,8 @@ class Transcriber {
     if (this._speechEndedAt && this._lastResultAt > this._speechEndedAt) {
       this._clearJaSpeechEndFlush();
     }
+
+    this._finalizeCaptionActivity(beforeFinal, beforeInterimNorm);
 
     if (this.onResult) {
       this.onResult(this.finalTranscript, this.interimTranscript);
@@ -685,8 +689,9 @@ class Transcriber {
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
     if (this._resumeNeeded || this._resumeWhenVisible) return true;
     if (this._hold) return this.isCaptionStalled();
-    const msResult = this.msSinceResult();
-    if (this._gotHypothesis && msResult >= this._captionStaleThresholdMs()) return true;
+    const msStill = this.msSinceCaptionChange();
+    if (this._isIOS && this._gotHypothesis && msStill >= Transcriber.iosResumeOfferMs) return true;
+    if (this._gotHypothesis && msStill >= this._captionStaleThresholdMs()) return true;
     return this.needsResume() || this.isCaptionStalled();
   }
 
@@ -824,9 +829,50 @@ class Transcriber {
    * @returns {number}
    */
   msSinceResult() {
-    if (this._lastResultAt) return Date.now() - this._lastResultAt;
+    return this.msSinceCaptionChange();
+  }
+
+  /**
+   * 字幕の中身が最後に変わってからのミリ秒（同文の再送だけでは進まない）。
+   * @returns {number}
+   */
+  msSinceCaptionChange() {
+    const t = this._lastCaptionChangeAt || this._lastResultAt;
+    if (t) return Date.now() - t;
     if (this._sessionStartedAt) return Date.now() - this._sessionStartedAt;
     return Infinity;
+  }
+
+  /**
+   * @param {string} beforeFinal
+   * @param {string} beforeInterimNorm
+   * @private
+   */
+  _finalizeCaptionActivity(beforeFinal, beforeInterimNorm) {
+    if (this.language === 'ja-JP') {
+      const polished = Transcriber.polishJaCommitted(this.finalTranscript, this._dedupeAnchorRaw);
+      if (polished !== this.finalTranscript) this.finalTranscript = polished;
+    }
+    const fp = this._captionActivityFingerprint();
+    const finalChanged = (this.finalTranscript || '') !== (beforeFinal || '');
+    const interimNorm = this._normalize(this.interimTranscript);
+    const interimChanged = interimNorm !== beforeInterimNorm;
+    if (fp !== this._captionFingerprint || finalChanged || interimChanged) {
+      this._captionFingerprint = fp;
+      this._lastCaptionChangeAt = Date.now();
+      this._lastResultAt = this._lastCaptionChangeAt;
+      this._stallReviveCount = 0;
+    }
+  }
+
+  /**
+   * @returns {string}
+   * @private
+   */
+  _captionActivityFingerprint() {
+    const finalNorm = this._normalize(this.finalTranscript || '');
+    if (finalNorm.length >= 20) return `f:${finalNorm}`;
+    return `f:${finalNorm}|i:${this._normalize(this.interimTranscript || '')}`;
   }
 
   /**
@@ -1366,6 +1412,9 @@ class Transcriber {
    */
   static iosCaptionStaleMs = 3200;
 
+  /** iOS で「再開」を出し始めるまで（確定が動いていない時間） */
+  static iosResumeOfferMs = 1800;
+
   /**
    * この回数だけ自動付け直ししたあとは、タップ用の「再開」を出す。
    */
@@ -1779,6 +1828,51 @@ class Transcriber {
   }
 
   /**
+   * 長い確定がほぼ半分ずつ重複（Hermes デモのような塊の再送）を1つに畳む。
+   * @param {string} text
+   * @param {string} [anchorRaw]
+   * @returns {string}
+   */
+  static collapseJaNearHalfDuplicate(text, anchorRaw) {
+    const raw = (text || '').trim();
+    if (!raw) return '';
+    const anchor = (anchorRaw || '').trim();
+    const head = anchor && raw.startsWith(anchor) ? anchor : '';
+    let tail = head ? raw.slice(head.length) : raw;
+    let norm = Transcriber._foldJaDigits(Transcriber._plain(tail));
+    if (norm.length < 40) return raw;
+    let changed = true;
+    while (changed && norm.length >= 40) {
+      changed = false;
+      const half = Math.floor(norm.length / 2);
+      const a = norm.slice(0, half);
+      const b = norm.slice(half);
+      const shared = Transcriber._lcsLen(a, b);
+      if (shared >= half * 0.72) {
+        tail = Transcriber._headPlain(tail, half);
+        norm = Transcriber._foldJaDigits(Transcriber._plain(tail));
+        changed = true;
+      }
+    }
+    return head + tail;
+  }
+
+  /**
+   * @param {string} text
+   * @param {string} [anchorRaw]
+   * @returns {string}
+   */
+  static polishJaCommitted(text, anchorRaw) {
+    let out = (text || '').trim();
+    if (!out) return '';
+    out = Transcriber.collapseRepeatedPhrase(out, 'ja-JP');
+    out = Transcriber.collapseJaNearHalfDuplicate(out, anchorRaw);
+    out = Transcriber.collapseAdjacentJaRepeats(out, anchorRaw);
+    out = Transcriber.collapseJaNearHalfDuplicate(out, anchorRaw);
+    return out;
+  }
+
+  /**
    * @param {string} raw
    * @param {number} plainLen
    * @returns {string}
@@ -1867,11 +1961,11 @@ class Transcriber {
     if (!raw) return '';
     const norm = Transcriber._foldJaDigits(Transcriber._plain(raw));
     if (norm.length < 8) return raw;
-    const maxUnit = Math.floor(norm.length / 2);
+    const maxUnit = Math.min(320, Math.floor(norm.length / 2));
     for (let unit = maxUnit; unit >= 4; unit--) {
       if (norm.length % unit !== 0) continue;
       const times = norm.length / unit;
-      if (times < 2 || times > 6) continue;
+      if (times < 2 || times > 12) continue;
       const piece = norm.slice(0, unit);
       let same = true;
       for (let t = 1; t < times; t++) {

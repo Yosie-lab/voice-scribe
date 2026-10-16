@@ -535,6 +535,11 @@ body::before {
   gap: 12px;
 }
 
+body.caption-stalled-recording #resume-reading-header-btn,
+body.caption-stalled-recording #resume-reading-btn {
+  display: inline-flex !important;
+}
+
 .resume-reading-btn {
   position: relative;
   z-index: 12;
