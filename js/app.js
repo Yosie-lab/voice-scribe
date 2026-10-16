@@ -55,6 +55,7 @@ class VoiceScribeApp {
     this._draftAudioUrl = null;
     this._draftPlayToken = 0;
     this._speechWatch = null;
+    this._captionWatch = null;
     this._speechProfile = null;
     this._speechFloor = 0.012;
     this._speechHotMs = 0;
@@ -386,6 +387,7 @@ class VoiceScribeApp {
     if (!this.isRecording) return;
     this._ensureLiveRecognition();
     this._startSpeechWatch();
+    this._startCaptionWatch();
 
     // 言語ボタンを一時無効化
     document.querySelectorAll('.lang-btn').forEach((btn) => {
@@ -422,6 +424,7 @@ class VoiceScribeApp {
   async _stopRecordingBody(interrupted, quiet) {
     const uiEpoch = this._transcriptEpoch;
     this._stopSpeechWatch();
+    this._stopCaptionWatch();
     this._recoverGen++;
     this._checkpointGen++;
     if (this._recoverTimer) {
@@ -563,6 +566,7 @@ class VoiceScribeApp {
     this._userPaused = false;
     this._backgrounded = false;
     this._stopSpeechWatch();
+    this._stopCaptionWatch();
     this._releaseWakeLock();
     this._stopTimer();
 
@@ -1107,8 +1111,25 @@ class VoiceScribeApp {
    */
   _ensureLiveRecognition() {
     if (!this.isRecording || this._userPaused) return;
-    if (this.transcriber.isEngineRunning()) return;
+    if (this.transcriber.isEngineRunning() && !this.transcriber.isCaptionStalled()) return;
     if (this.transcriber.needsResume()) this.transcriber.continueListening();
+  }
+
+  /**
+   * 音量メータが無くても、字幕だけ止まっているゾンボ認識を検知して付け直す。
+   * @private
+   */
+  _checkCaptionHealth() {
+    if (!this.isRecording || this._userPaused || document.visibilityState === 'hidden') return;
+    this._syncResumeReading();
+    if (!this.transcriber.isListening) {
+      this.transcriber.shouldRestart = true;
+      this.transcriber.isListening = true;
+    }
+    if (this.transcriber.isCaptionStalled()) {
+      this.transcriber.reviveLiveCaption();
+    }
+    this._syncResumeReading();
   }
 
   /**
@@ -1142,10 +1163,29 @@ class VoiceScribeApp {
   }
 
   /**
+   * ビジュアライザが繋がらなくても字幕の死活を見る。
+   * @private
+   */
+  _startCaptionWatch() {
+    this._stopCaptionWatch();
+    this._captionWatch = setInterval(() => this._checkCaptionHealth(), 1000);
+  }
+
+  /**
+   * @private
+   */
+  _stopCaptionWatch() {
+    if (this._captionWatch) {
+      clearInterval(this._captionWatch);
+      this._captionWatch = null;
+    }
+  }
+
+  /**
    * @private
    */
   _pollSpeechLevel() {
-    this._syncResumeReading();
+    this._checkCaptionHealth();
     if (!this.isRecording || this._userPaused || document.visibilityState === 'hidden') {
       this._speechHotMs = 0;
       this._stallHotMs = 0;
