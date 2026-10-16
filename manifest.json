@@ -3,7 +3,7 @@
   "short_name": "VoiceScribe",
   "description": "リアルタイム文字起こし機能付きボイスレコーダー。日本語・英語対応。",
   "id": "./",
-  "start_url": "./?v=82",
+  "start_url": "./?v=83",
   "scope": "./",
   "display": "standalone",
   "background_color": "#080b14",

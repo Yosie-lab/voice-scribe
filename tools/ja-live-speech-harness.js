@@ -598,12 +598,13 @@ assert(viz.includes('getSpeechPeak'), 'frame peak for short bursts');
 assert(viz.includes('_sampleSpeechPeak'), 'peak is sampled while drawing');
 assert(app.includes('usePeak'), 'desktop ja watch reads the peak');
 assert(app.includes('speechHotFlags'), 'stall does not reuse the gap peak');
+assert(!index.includes('v=82'), 'index cache bust left 82');
 assert(!index.includes('v=81'), 'index cache bust left 81');
 assert(!index.includes('v=80'), 'index cache bust left 80');
 assert(!index.includes('v=79'), 'index cache bust left 79');
-assert(index.includes('v=82'), 'index is v82');
-assert(sw.includes("voicescribe-v82"), 'sw cache name');
-assert(!sw.includes('voicescribe-v81'), 'old sw name gone');
+assert(index.includes('v=83'), 'index is v83');
+assert(sw.includes("voicescribe-v83"), 'sw cache name');
+assert(!sw.includes('voicescribe-v82'), 'old sw name gone');
 const manifest = fs.readFileSync(path.join(root, 'manifest.json'), 'utf8');
 assert(!manifest.includes('portrait-primary'), 'PWA does not lock portrait-primary');
 assert(!manifest.includes('"orientation"'), 'manifest does not declare orientation lock');
@@ -611,7 +612,10 @@ assert(manifest.includes('"id": "./"'), 'manifest id stays stable for iOS home s
 assert(!app.includes('navigator.wakeLock.request'), 'wake lock does not block device lock');
 assert(!app.includes('screen.orientation.unlock'), 'no orientation unlock calls on iOS');
 assert(app.includes('_syncViewportHeight'), 'viewport resync on rotate for iOS Safari');
-assert(app.includes("APP_BUILD = 'v82'"), 'app build tag is v82');
+assert(app.includes("APP_BUILD = 'v83'"), 'app build tag is v83');
+assert(transcriberSrc.includes('msSinceCaptionChange'), 'stall uses caption content time');
+assert(transcriberSrc.includes('polishJaCommitted'), 'long ja repeats are polished');
+assert(css.includes('caption-stalled-recording'), 'stalled recording forces resume visible');
 assert(app.includes("addEventListener('pointerdown', resumeTap"), 'resume binds pointerdown for iOS gesture');
 assert(transcriberSrc.includes('manualResumeListening'), 'user tap forces recognition restart');
 assert(app.includes('resume-reading-header-btn'), 'header resume syncs with deck resume');
@@ -622,7 +626,7 @@ assert(app.includes('_stageDraftFromStop'), 'stop shows draft play before save f
 assert(transcriberSrc.includes('jaOverlapMax'), 'long ja overlap cap is named');
 assert(transcriberSrc.includes('collapseAdjacentJaRepeats'), 'adjacent ja repeats collapse after commit');
 assert(app.includes('app-ios-rotation-hint'), 'settings explain iPhone rotation limits');
-assert(app.includes('sw.js?v=82'), 'service worker registration is cache-busted');
+assert(app.includes('sw.js?v=83'), 'service worker registration is cache-busted');
 assert(transcriberSrc.includes('_cleanLiveInterim'), 'interim repeat uses the commit dedupe window');
 assert(transcriberSrc.includes('setContinuedPrefix'), 'resume prefix is excluded from dedupe anchor');
 assert(transcriberSrc.includes('iosCaptionBootMs'), 'ios waits longer before caption stall revive');
@@ -967,6 +971,11 @@ const doubledTail = `${LINE}${LINE}`;
 assert(
   Transcriber.collapseAdjacentJaRepeats(doubledTail) === LINE,
   'adjacent duplicate lyric tail collapses to one'
+);
+const halfDup = `${LINE}${LINE}`;
+assert(
+  Transcriber.collapseJaNearHalfDuplicate(halfDup) === LINE,
+  'near-half duplicate monologue collapses to one block'
 );
 
 const tailResend = new Transcriber();
