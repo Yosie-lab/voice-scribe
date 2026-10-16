@@ -343,7 +343,10 @@ class VoiceScribeApp {
       } catch (e) {
         console.warn('SpeechRecognition start warning:', e);
       }
-      if (!started) this.transcriber.armResume();
+      if (!started) {
+        this.transcriber.armResume();
+        this.transcriber.continueListening();
+      }
       this._primeContinuedTranscript();
     }
 
@@ -373,11 +376,15 @@ class VoiceScribeApp {
       } catch (e) {
         console.warn('SpeechRecognition start warning:', e);
       }
-      if (!started) this.transcriber.armResume();
+      if (!started) {
+        this.transcriber.armResume();
+        this.transcriber.continueListening();
+      }
       this._primeContinuedTranscript();
     }
 
     if (!this.isRecording) return;
+    this._ensureLiveRecognition();
     this._startSpeechWatch();
 
     // 言語ボタンを一時無効化
@@ -1089,10 +1096,19 @@ class VoiceScribeApp {
   _syncResumeReading() {
     const btn = document.getElementById('resume-reading-btn');
     if (!btn || !this.transcriber) return;
-    const recognitionDown = this.transcriber.needsResume()
-      || (!this.transcriber.isEngineRunning() && this.recorder.needsRecovery());
+    const recognitionDown = this.transcriber.needsResume();
     const show = !!(this.isRecording && !this._userPaused && recognitionDown);
     btn.style.display = show ? 'inline-flex' : 'none';
+  }
+
+  /**
+   * 録音は動いているのに認識だけ付いていないとき、同じジェスチャ内で付け直す。
+   * @private
+   */
+  _ensureLiveRecognition() {
+    if (!this.isRecording || this._userPaused) return;
+    if (this.transcriber.isEngineRunning()) return;
+    if (this.transcriber.needsResume()) this.transcriber.continueListening();
   }
 
   /**

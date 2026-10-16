@@ -55,6 +55,9 @@ class Transcriber {
     this._resumeNeeded = false;
     this._restartDelayMs = 0;
     this._recentNorms = [];
+    this._pendingStartAt = 0;
+    this._startAckTimer = null;
+    this._startAckGen = 0;
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
@@ -140,6 +143,8 @@ class Transcriber {
    */
   _onRecognitionStart() {
     this._engineRunning = true;
+    this._pendingStartAt = 0;
+    this._clearStartAckWatch();
     this._resumeNeeded = false;
     this._stopWatchPending = false;
     this._clearStopWatch();
@@ -234,7 +239,7 @@ class Transcriber {
       this.finalTranscript,
       currentInterim
     );
-    if (this._speechEndedAt && this._lastResultAt >= this._speechEndedAt) {
+    if (this._speechEndedAt && this._lastResultAt > this._speechEndedAt) {
       this._clearJaSpeechEndFlush();
     }
 
@@ -269,6 +274,9 @@ class Transcriber {
   _onRecognitionError(event) {
     const err = event.error || 'error';
     console.warn('音声認識イベントエラー:', err);
+    this._engineRunning = false;
+    this._pendingStartAt = 0;
+    this._clearStartAckWatch();
     this._commitPendingInterim();
 
     // 小さい声は no-speech でセッションが切れる。暫定を残してすぐ付け直す。
@@ -352,6 +360,8 @@ class Transcriber {
    */
   _onRecognitionEnd() {
     this._engineRunning = false;
+    this._pendingStartAt = 0;
+    this._clearStartAckWatch();
     this._intentionalAbort = false;
     this._jaUnwedgeSent = false;
     this._stopWatchPending = false;
@@ -435,31 +445,19 @@ class Transcriber {
     this._resumeNeeded = false;
     this._restartDelayMs = 0;
     this._stopWatchPending = false;
+    this._pendingStartAt = 0;
     this._recentNorms = [];
     this.retryCount = 0;
     this._contentionRestarts = 0;
     this._clearRestartTimer();
     this._clearStopWatch();
+    this._clearStartAckWatch();
     this._hold = false;
     this._resumeWhenVisible = false;
     this.shouldRestart = true;
     this.isListening = true;
 
-    try {
-      this.recognition.start();
-      this._engineRunning = true;
-      this._engineWasStarted = true;
-      console.log(`音声文字起こし開始 (${this.language})`);
-      return true;
-    } catch (error) {
-      console.warn('文字起こしstart警告:', error);
-      if (error.name === 'InvalidStateError') {
-        this._engineRunning = true;
-        return true;
-      }
-      this.isListening = false;
-      return false;
-    }
+    return this._tryStartEngine('session');
   }
 
   /**
@@ -477,6 +475,8 @@ class Transcriber {
     this._resumeNeeded = false;
     this._restartDelayMs = 0;
     this._stopWatchPending = false;
+    this._pendingStartAt = 0;
+    this._clearStartAckWatch();
     this._clearRestartTimer();
     this._clearStopWatch();
     this._clearJaHungWatch();
@@ -550,6 +550,7 @@ class Transcriber {
     this.isListening = true;
     this._hold = false;
     this._resumeWhenVisible = false;
+    this._resumeNeeded = false;
     this.retryCount = 0;
     this._contentionRestarts = 0;
     this._clearRestartTimer();
@@ -586,8 +587,9 @@ class Transcriber {
     if (this._hold) return false;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
     if (this._engineRunning) return false;
+    if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs) return false;
+    if (this._restartTimer) return false;
     if (this._resumeNeeded) return true;
-    if (this._restartTimer && this._restartDelayMs < Transcriber.resumeGapMs) return false;
     return true;
   }
 
@@ -625,6 +627,8 @@ class Transcriber {
     if (this._lastNudgeAt && now - this._lastNudgeAt < 3000) return false;
 
     if (!this._engineRunning) {
+      // start() 直後は onstart 前。ここで init() すると desktop の初回認識が abort され字幕が空になる。
+      if (this._pendingStartAt && now - this._pendingStartAt < Transcriber.startAckMs) return false;
       // 予定済みの ja 再起動はピークで潰さない。init() が遅い onresult を外す。
       if (this.language === 'ja-JP' && !this._isIOS && this._restartTimer) return false;
       this._lastNudgeAt = now;
@@ -644,7 +648,7 @@ class Transcriber {
         gotResult: !!this._gotHypothesis,
         msSinceResult: this.msSinceResult(),
         msSinceSpeechEnd: sinceSpeechEnd,
-        resultAfterSpeechEnd: !!(this._speechEndedAt && this._lastResultAt >= this._speechEndedAt)
+        resultAfterSpeechEnd: !!(this._speechEndedAt && this._lastResultAt > this._speechEndedAt)
       });
       if (action !== 'stop') return false;
       this._lastNudgeAt = now;
@@ -711,25 +715,88 @@ class Transcriber {
       return;
     }
 
-    try {
-      this.init();
-      this.recognition.start();
-      this._engineRunning = true;
-      this._resumeWhenVisible = false;
-      this._heardSpeechAt = 0;
-      this._speechEndedAt = 0;
-      this._gotHypothesis = false;
-      this._lastResultAt = Date.now();
-      this.retryCount = 0;
-    } catch (error) {
-      this._engineRunning = false;
-      if (!error || error.name !== 'InvalidStateError') {
-        console.warn('音声認識リトライ警告:', error);
-      }
+    this.init();
+    if (!this._tryStartEngine('restart')) {
       this.retryCount++;
-      // ここで stop() すると shouldRestart が落ち、歌の途中で認識が戻らない。
       if (this.retryCount > this.maxRetries) this._signalResumeNeeded();
       this._scheduleRestart(Math.min(2000, 160 * Math.max(1, this.retryCount)));
+      return;
+    }
+    this._resumeWhenVisible = false;
+    this._heardSpeechAt = 0;
+    this._speechEndedAt = 0;
+    this._gotHypothesis = false;
+    this._lastResultAt = Date.now();
+    this.retryCount = 0;
+  }
+
+  /**
+   * recognition.start() と onstart 待ち。onstart 前に _engineRunning を立てない。
+   * @param {'session'|'restart'} kind
+   * @returns {boolean}
+   * @private
+   */
+  _tryStartEngine(kind) {
+    if (!this.recognition) return false;
+    this._engineRunning = false;
+    this._pendingStartAt = Date.now();
+    try {
+      this.recognition.start();
+      if (kind === 'session') this._engineWasStarted = true;
+      this._armStartAckWatch();
+      console.log(`音声文字起こし開始 (${this.language})`);
+      return true;
+    } catch (error) {
+      console.warn('文字起こしstart警告:', error);
+      this._pendingStartAt = 0;
+      this._clearStartAckWatch();
+      if (error.name === 'InvalidStateError') {
+        try {
+          this.recognition.stop();
+        } catch {
+          // 無視
+        }
+        try {
+          this.recognition.start();
+          if (kind === 'session') this._engineWasStarted = true;
+          this._armStartAckWatch();
+          return true;
+        } catch (retryErr) {
+          console.warn('文字起こし再start警告:', retryErr);
+        }
+      }
+      if (kind === 'session') this.isListening = false;
+      return false;
+    }
+  }
+
+  /**
+   * start() したのに onstart が来ない Chrome 向け。動いている扱いのまま黙るのを防ぐ。
+   * @private
+   */
+  _armStartAckWatch() {
+    this._clearStartAckWatch();
+    const gen = ++this._startAckGen;
+    this._startAckTimer = setTimeout(() => {
+      this._startAckTimer = null;
+      if (gen !== this._startAckGen) return;
+      if (this._engineRunning || !this.shouldRestart || !this.isListening) return;
+      if (!this._pendingStartAt) return;
+      console.warn('音声認識 onstart 待ちがタイムアウトしたため、付け直します');
+      this._pendingStartAt = 0;
+      this._signalResumeNeeded();
+      if (!this._restartTimer) this._scheduleRestart(Transcriber.restartDelay('end', this._isIOS, this.language));
+    }, Transcriber.startAckMs);
+  }
+
+  /**
+   * @private
+   */
+  _clearStartAckWatch() {
+    this._startAckGen += 1;
+    if (this._startAckTimer) {
+      clearTimeout(this._startAckTimer);
+      this._startAckTimer = null;
     }
   }
 
@@ -882,7 +949,7 @@ class Transcriber {
         gotResult: !!this._gotHypothesis,
         msSinceResult: this.msSinceResult(),
         msSinceSpeechEnd: Date.now() - endedAt,
-        resultAfterSpeechEnd: this._lastResultAt >= endedAt
+        resultAfterSpeechEnd: this._lastResultAt > endedAt
       });
       if (action !== 'stop') return;
       this._unwedgeJaSession();
@@ -1052,6 +1119,11 @@ class Transcriber {
    * 回復の stop() のあと onend が来ないとき、認識だけ付け直すまでの待ち。
    */
   static stopWatchMs = 800;
+
+  /**
+   * start() から onstart まで待つ時間。これより早い gap nudge は初回認識を abort する。
+   */
+  static startAckMs = 1200;
 
   /**
    * iOS だけ発話ごとに終わらせて onend で付け直す。
