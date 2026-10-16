@@ -588,6 +588,15 @@ class Transcriber {
    * @returns {boolean}
    */
   continueListening() {
+    return this.manualResumeListening(false);
+  }
+
+  /**
+   * ユーザタップで認識を付け直す。await より先に呼ぶ。ゾンビ engine も止めてから start する。
+   * @param {boolean} [fromUserTap]
+   * @returns {boolean}
+   */
+  manualResumeListening(fromUserTap = true) {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return false;
     this.shouldRestart = true;
@@ -599,7 +608,40 @@ class Transcriber {
     this.retryCount = 0;
     this._contentionRestarts = 0;
     this._clearRestartTimer();
-    this._restartNow();
+    this._clearStopWatch();
+    this._clearJaHungWatch();
+    this._clearJaSpeechEndFlush();
+    const hadHypothesis = this._gotHypothesis;
+
+    if (this.recognition) {
+      try {
+        this.recognition.stop();
+      } catch {
+        try {
+          this.recognition.abort();
+        } catch {
+          // すでに停止
+        }
+      }
+      this._engineRunning = false;
+    }
+
+    this.init();
+    this._lastResultAt = Date.now();
+    this._sessionStartedAt = Date.now();
+    if (hadHypothesis) this._gotHypothesis = true;
+
+    if (!this._tryStartEngine('restart')) {
+      this.retryCount++;
+      const delay = fromUserTap ? 40 : Transcriber.restartDelay('end', this._isIOS, this.language);
+      this._scheduleRestart(Math.min(2000, delay + this.retryCount * 80));
+      return false;
+    }
+    this._resumeWhenVisible = false;
+    this._heardSpeechAt = 0;
+    this._speechEndedAt = 0;
+    this.retryCount = 0;
+    this._notifyListening();
     return true;
   }
 

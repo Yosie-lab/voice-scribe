@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v80';
+const APP_BUILD = 'v81';
 
 class VoiceScribeApp {
   constructor() {
@@ -1143,9 +1143,12 @@ class VoiceScribeApp {
   async _resumeReading() {
     if (!this.isRecording || this._userPaused || this._stopPromise) return;
     const ios = this.transcriber.startBeforeRecorder;
-    if (ios && (!this.transcriber.isEngineRunning() || this.recorder.needsRecovery())) {
-      this.transcriber.continueListening();
-    }
+
+    // iOS はジェスチャ同期のうちに必ず付け直す（engineRunning のゾンビでも）。
+    this.transcriber.manualResumeListening(true);
+    this.ui.showToast('🎙️ 文字起こしを再開しています', 'info', 2000);
+    this._recoverAttempts = 0;
+    this._syncResumeReading();
 
     let stream = this.recorder.stream;
     const captureDown = this.recorder.needsRecovery();
@@ -1167,11 +1170,8 @@ class VoiceScribeApp {
     }
 
     if (!ios && (captureDown || !this.transcriber.isEngineRunning())) {
-      this.transcriber.continueListening();
+      this.transcriber.manualResumeListening(true);
     }
-    this._recoverAttempts = 0;
-    this.transcriber._stallReviveCount = 0;
-    this.transcriber._resumeNeeded = false;
     this._syncResumeReading();
   }
 
@@ -1569,7 +1569,7 @@ class VoiceScribeApp {
       '・<b>横画面</b>にする: コントロールセンター → 「画面の向きをロック」を OFF にしてから端末を横に。<br>',
       '・<b>ホーム画面</b>から起動している場合: アイコンを削除 → Safari で ',
       '<a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener">yosie-lab.github.io/voice-scribe</a>',
-      ' を開く → ⚙️ でビルド v80 を確認 → 共有 → ホーム画面に追加。',
+      ' を開く → ⚙️ でビルド v81 を確認 → 共有 → ホーム画面に追加。',
       '<br>今朝のアップデートで向きがおかしくなった場合も、上と同じ手順で古いホーム画面アイコンを消してください。'
     ].join('');
   }
@@ -2256,7 +2256,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=80');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=81');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();
