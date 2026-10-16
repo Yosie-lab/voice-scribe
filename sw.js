@@ -1,7 +1,7 @@
 // VoiceScribe Service Worker
 // Network-First戦略で常に最新アセットを配信
 
-const CACHE_NAME = 'voicescribe-v69';
+const CACHE_NAME = 'voicescribe-v71';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -14,7 +14,7 @@ const ASSETS_TO_CACHE = [
   './js/visualizer.js',
   './js/obsidian.js',
   './js/ui.js',
-  './manifest.json',
+  './manifest.json?v=71',
   './icons/icon-192.png',
   './icons/icon-512.png'
 ];
