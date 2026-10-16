@@ -598,11 +598,11 @@ assert(viz.includes('getSpeechPeak'), 'frame peak for short bursts');
 assert(viz.includes('_sampleSpeechPeak'), 'peak is sampled while drawing');
 assert(app.includes('usePeak'), 'desktop ja watch reads the peak');
 assert(app.includes('speechHotFlags'), 'stall does not reuse the gap peak');
+assert(!index.includes('v=77'), 'index cache bust left 77');
 assert(!index.includes('v=76'), 'index cache bust left 76');
-assert(!index.includes('v=75'), 'index cache bust left 75');
-assert(index.includes('v=77'), 'index is v77');
-assert(sw.includes("voicescribe-v77"), 'sw cache name');
-assert(!sw.includes('voicescribe-v76'), 'old sw name gone');
+assert(index.includes('v=78'), 'index is v78');
+assert(sw.includes("voicescribe-v78"), 'sw cache name');
+assert(!sw.includes('voicescribe-v77'), 'old sw name gone');
 const manifest = fs.readFileSync(path.join(root, 'manifest.json'), 'utf8');
 assert(!manifest.includes('portrait-primary'), 'PWA does not lock portrait-primary');
 assert(!manifest.includes('"orientation"'), 'manifest does not declare orientation lock');
@@ -610,10 +610,12 @@ assert(manifest.includes('"id": "./"'), 'manifest id stays stable for iOS home s
 assert(!app.includes('navigator.wakeLock.request'), 'wake lock does not block device lock');
 assert(!app.includes('screen.orientation.unlock'), 'no orientation unlock calls on iOS');
 assert(app.includes('_syncViewportHeight'), 'viewport resync on rotate for iOS Safari');
-assert(app.includes("APP_BUILD = 'v77'"), 'app build tag is v77');
+assert(app.includes("APP_BUILD = 'v78'"), 'app build tag is v78');
 assert(app.includes('_stageDraftFromStop'), 'stop shows draft play before save finishes');
+assert(transcriberSrc.includes('jaOverlapMax'), 'long ja overlap cap is named');
+assert(transcriberSrc.includes('collapseAdjacentJaRepeats'), 'adjacent ja repeats collapse after commit');
 assert(app.includes('app-ios-rotation-hint'), 'settings explain iPhone rotation limits');
-assert(app.includes('sw.js?v=77'), 'service worker registration is cache-busted');
+assert(app.includes('sw.js?v=78'), 'service worker registration is cache-busted');
 assert(transcriberSrc.includes('_cleanLiveInterim'), 'interim repeat uses the commit dedupe window');
 assert(transcriberSrc.includes('setContinuedPrefix'), 'resume prefix is excluded from dedupe anchor');
 assert(transcriberSrc.includes('iosCaptionBootMs'), 'ios waits longer before caption stall revive');
@@ -889,7 +891,8 @@ function wait(ms) {
 }
 
 const LINE = '桜の花びらが舞う夜に私は静かに歌い続けているよ今夜も';
-assert(Transcriber._plain(LINE).length > 24, 'lyric fixture is longer than the 24-char overlap cap');
+assert(Transcriber._plain(LINE).length > 24, 'lyric fixture is longer than a short overlap');
+assert(Transcriber.jaOverlapMax >= Transcriber._plain(LINE).length, 'ja overlap cap covers the lyric fixture');
 assert(Transcriber.repeatWindowMs > Transcriber.jaStaleStopMs, 'repeat window covers a stale stop');
 assert(Transcriber.repeatWindowMs > Transcriber.jaResultGraceMs, 'repeat window covers the late-hypothesis grace');
 assert(Transcriber.repeatWindowMs > 2200, 'repeat window is longer than the old merge window');
@@ -948,6 +951,17 @@ assert(countSpan(iosLoop.finalTranscript, LINE) === 1, 'ios loop final for a rec
 iosLoop.stop();
 
 assert(Transcriber.mergeJapaneseOverlap(LINE, LINE) === LINE, 'joining identical ja chunks does not duplicate');
+const longLeft = `${LINE}川を越えて`;
+const longRight = `${LINE}川を越えて行く`;
+assert(
+  Transcriber.mergeJapaneseOverlap(longLeft, longRight) === longRight,
+  'long ja overlap joins without duplicating the lyric head'
+);
+const doubledTail = `${LINE}${LINE}`;
+assert(
+  Transcriber.collapseAdjacentJaRepeats(doubledTail) === LINE,
+  'adjacent duplicate lyric tail collapses to one'
+);
 
 const tailResend = new Transcriber();
 tailResend.language = 'ja-JP';

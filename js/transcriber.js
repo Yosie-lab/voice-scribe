@@ -57,6 +57,8 @@ class Transcriber {
     this._recentNorms = [];
     /** @type {string} 続き録音の接頭辞。dedupe はこのあとに足した分だけ見る。 */
     this._dedupeAnchorNorm = '';
+    /** @type {string} 接頭辞の生テキスト（句読点畳みの対象外にする） */
+    this._dedupeAnchorRaw = '';
     this._pendingStartAt = 0;
     this._startAckTimer = null;
     this._startAckGen = 0;
@@ -194,6 +196,8 @@ class Transcriber {
 
     let currentInterim = '';
     let currentFinal = '';
+    /** @type {string[]} */
+    const newFinals = [];
     const results = event.results || [];
     const resultIndex = typeof event.resultIndex === 'number' ? event.resultIndex : 0;
     const fromIndex = Math.max(resultIndex, this._finalCursor || 0);
@@ -204,7 +208,10 @@ class Transcriber {
       if (result.isFinal) {
         const folded = this._normalize(text);
         // 同じイベントの最終が同じ文面で二枚来ても、一枚だけ足す。
-        if (folded && folded !== this._normalize(currentFinal)) currentFinal += text;
+        if (folded && folded !== this._normalize(currentFinal)) {
+          currentFinal += text;
+          newFinals.push(text);
+        }
         this._finalCursor = i + 1;
       } else {
         currentInterim += text;
@@ -224,7 +231,9 @@ class Transcriber {
       if (this.finalTranscript !== beforeSuper) this._lastFromInterim = true;
     }
     const before = this.finalTranscript;
-    if ((currentFinal || '').trim()) this._appendFinal(currentFinal);
+    for (const piece of newFinals) {
+      if ((piece || '').trim()) this._appendFinal(piece);
+    }
     if (this.finalTranscript === before) {
       const salvaged = Transcriber.salvageWipedInterim(
         this.language,
@@ -454,6 +463,7 @@ class Transcriber {
     this._pendingStartAt = 0;
     this._recentNorms = [];
     this._dedupeAnchorNorm = '';
+    this._dedupeAnchorRaw = '';
     this.retryCount = 0;
     this._contentionRestarts = 0;
     this._clearRestartTimer();
@@ -475,6 +485,7 @@ class Transcriber {
     const text = prefix || '';
     this.finalTranscript = text;
     this.interimTranscript = '';
+    this._dedupeAnchorRaw = text;
     this._dedupeAnchorNorm = this._normalize(text);
   }
 
@@ -1201,6 +1212,12 @@ class Transcriber {
   static repeatWindowMs = 22000;
 
   /**
+   * 日本語の確定・暫定をつなぐときに見る最大オーバーラップ（plain 文字）。
+   * 24 だと歌詞級の再送で境界が二重になり、字幕が読めなくなる。
+   */
+  static jaOverlapMax = 128;
+
+  /**
    * これより短い自動再起動では「再開」を出さない。iOS の発話ごとの切れ目で点滅させない。
    */
   static resumeGapMs = 1200;
@@ -1474,7 +1491,7 @@ class Transcriber {
     const fa = Transcriber._foldJaDigits(a);
     const fb = Transcriber._foldJaDigits(b);
     if (fa === fb) return a;
-    const max = Math.min(fa.length, fb.length, 24);
+    const max = Math.min(fa.length, fb.length, Transcriber.jaOverlapMax);
     for (let len = max; len >= 4; len--) {
       if (fa.slice(-len) === fb.slice(0, len)) return a.slice(0, -len) + b;
     }
@@ -1601,11 +1618,57 @@ class Transcriber {
     if (!foldI) return '';
     if (foldC.endsWith(foldI)) return '';
     if (foldI.startsWith(foldC)) return Transcriber._slicePlain(pending, foldC.length);
-    const max = Math.min(foldC.length, foldI.length, 24);
+    const max = Math.min(foldC.length, foldI.length, Transcriber.jaOverlapMax);
     for (let len = max; len >= 4; len--) {
       if (foldC.slice(-len) === foldI.slice(0, len)) return Transcriber._slicePlain(pending, len);
     }
     return raw;
+  }
+
+  /**
+   * 確定末尾に同じ塊が二重になったとき、外側の繰り返しだけ取る（接頭辞は触らない）。
+   * @param {string} text
+   * @param {string} [anchorRaw]
+   * @returns {string}
+   */
+  static collapseAdjacentJaRepeats(text, anchorRaw) {
+    const raw = (text || '').trim();
+    if (!raw) return '';
+    const anchor = (anchorRaw || '').trim();
+    const head = anchor && raw.startsWith(anchor) ? anchor : '';
+    let tail = head ? raw.slice(head.length) : raw;
+    if (!tail) return raw;
+    let norm = Transcriber._foldJaDigits(Transcriber._plain(tail));
+    let changed = true;
+    while (changed && norm.length >= 16) {
+      changed = false;
+      const cap = Math.min(Math.floor(norm.length / 2), Transcriber.jaOverlapMax);
+      for (let unit = cap; unit >= 8; unit--) {
+        if (norm.slice(-unit) !== norm.slice(-2 * unit, -unit)) continue;
+        tail = Transcriber._trimLastPlain(tail, unit);
+        norm = Transcriber._foldJaDigits(Transcriber._plain(tail));
+        changed = true;
+        break;
+      }
+    }
+    return head + tail;
+  }
+
+  /**
+   * @param {string} raw
+   * @param {number} plainLen
+   * @returns {string}
+   */
+  static _trimLastPlain(raw, plainLen) {
+    const trimmed = (raw || '').trim();
+    if (!plainLen) return trimmed;
+    let counted = 0;
+    let i = trimmed.length;
+    while (i > 0 && counted < plainLen) {
+      i -= 1;
+      if (!/[\s\u3000。、！？!?.,]/.test(trimmed[i])) counted += 1;
+    }
+    return trimmed.slice(0, i).replace(/[\s\u3000。、！？!?.,]+$/g, '');
   }
 
   /**
@@ -1786,8 +1849,10 @@ class Transcriber {
     }
     if (nextNorm.length < 4) return false;
     if (rows.some((row) => row.norm === nextNorm)) return true;
-    if (nextNorm.length >= 8) {
-      return rows.some((row) => row.norm.length > nextNorm.length && row.norm.includes(nextNorm));
+    if (nextNorm.length >= 8 && sinceChunk < Transcriber.repeatWindowMs) {
+      if (rows.some((row) => row.norm.length > nextNorm.length && (
+        row.norm.endsWith(nextNorm) || row.norm.startsWith(nextNorm)
+      ))) return true;
     }
     return false;
   }
@@ -1856,6 +1921,12 @@ class Transcriber {
       const current = this.finalTranscript || '';
       const base = current.slice(0, Math.max(0, current.length - last.length));
       this.finalTranscript = this._joinTranscript(base.trim(), next);
+      if (this.language === 'ja-JP') {
+        this.finalTranscript = Transcriber.collapseAdjacentJaRepeats(
+          this.finalTranscript,
+          this._dedupeAnchorRaw
+        );
+      }
       this._lastChunk = next;
       this._lastChunkAt = now;
       this._lastFromInterim = false;
@@ -1876,6 +1947,12 @@ class Transcriber {
     }
 
     this.finalTranscript = this._joinTranscript(this.finalTranscript, next);
+    if (this.language === 'ja-JP') {
+      this.finalTranscript = Transcriber.collapseAdjacentJaRepeats(
+        this.finalTranscript,
+        this._dedupeAnchorRaw
+      );
+    }
     this._lastChunk = next;
     this._lastChunkAt = now;
     this._lastFromInterim = false;
