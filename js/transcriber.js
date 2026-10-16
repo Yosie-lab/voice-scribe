@@ -57,10 +57,15 @@ class Transcriber {
     this._recentNorms = [];
     /** @type {string} 続き録音の接頭辞。dedupe はこのあとに足した分だけ見る。 */
     this._dedupeAnchorNorm = '';
+    /** @type {string} 接頭辞の生テキスト（句読点畳みの対象外にする） */
+    this._dedupeAnchorRaw = '';
     this._pendingStartAt = 0;
     this._startAckTimer = null;
     this._startAckGen = 0;
     this._lastReviveAt = 0;
+    this._lastInterimAt = 0;
+    this._lastInterimNorm = '';
+    this._stallReviveCount = 0;
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
@@ -191,9 +196,12 @@ class Transcriber {
     this._contentionRestarts = 0;
     this._captureErrorNotified = false;
     this._lastResultAt = Date.now();
+    this._stallReviveCount = 0;
 
     let currentInterim = '';
     let currentFinal = '';
+    /** @type {string[]} */
+    const newFinals = [];
     const results = event.results || [];
     const resultIndex = typeof event.resultIndex === 'number' ? event.resultIndex : 0;
     const fromIndex = Math.max(resultIndex, this._finalCursor || 0);
@@ -204,7 +212,10 @@ class Transcriber {
       if (result.isFinal) {
         const folded = this._normalize(text);
         // 同じイベントの最終が同じ文面で二枚来ても、一枚だけ足す。
-        if (folded && folded !== this._normalize(currentFinal)) currentFinal += text;
+        if (folded && folded !== this._normalize(currentFinal)) {
+          currentFinal += text;
+          newFinals.push(text);
+        }
         this._finalCursor = i + 1;
       } else {
         currentInterim += text;
@@ -224,7 +235,9 @@ class Transcriber {
       if (this.finalTranscript !== beforeSuper) this._lastFromInterim = true;
     }
     const before = this.finalTranscript;
-    if ((currentFinal || '').trim()) this._appendFinal(currentFinal);
+    for (const piece of newFinals) {
+      if ((piece || '').trim()) this._appendFinal(piece);
+    }
     if (this.finalTranscript === before) {
       const salvaged = Transcriber.salvageWipedInterim(
         this.language,
@@ -237,7 +250,7 @@ class Transcriber {
         if (this.finalTranscript !== before) this._lastFromInterim = true;
       }
     }
-    this.interimTranscript = this._cleanLiveInterim(
+    const cleanedInterim = this._cleanLiveInterim(
       this.finalTranscript,
       Transcriber.stripEchoInterim(
         this.language,
@@ -245,6 +258,13 @@ class Transcriber {
         currentInterim
       )
     );
+    const prevInterimNorm = this._normalize(this.interimTranscript);
+    const nextInterimNorm = this._normalize(cleanedInterim);
+    this.interimTranscript = cleanedInterim;
+    if (nextInterimNorm !== prevInterimNorm) {
+      this._lastInterimAt = Date.now();
+      this._lastInterimNorm = nextInterimNorm;
+    }
     if (this._speechEndedAt && this._lastResultAt > this._speechEndedAt) {
       this._clearJaSpeechEndFlush();
     }
@@ -435,6 +455,8 @@ class Transcriber {
 
     this.finalTranscript = '';
     this.interimTranscript = '';
+    this._lastInterimAt = 0;
+    this._lastInterimNorm = '';
     this._lastChunk = '';
     this._lastChunkAt = 0;
     this._lastFromInterim = false;
@@ -454,6 +476,7 @@ class Transcriber {
     this._pendingStartAt = 0;
     this._recentNorms = [];
     this._dedupeAnchorNorm = '';
+    this._dedupeAnchorRaw = '';
     this.retryCount = 0;
     this._contentionRestarts = 0;
     this._clearRestartTimer();
@@ -475,6 +498,7 @@ class Transcriber {
     const text = prefix || '';
     this.finalTranscript = text;
     this.interimTranscript = '';
+    this._dedupeAnchorRaw = text;
     this._dedupeAnchorNorm = this._normalize(text);
   }
 
@@ -571,6 +595,7 @@ class Transcriber {
     this._hold = false;
     this._resumeWhenVisible = false;
     this._resumeNeeded = false;
+    this._stallReviveCount = 0;
     this.retryCount = 0;
     this._contentionRestarts = 0;
     this._clearRestartTimer();
@@ -602,6 +627,28 @@ class Transcriber {
    * 動いているあいだ、隠しているあいだ、発話ごとの短い切れ目では false。
    * @returns {boolean}
    */
+  /**
+   * @returns {number}
+   * @private
+   */
+  _captionStaleThresholdMs() {
+    return this._isIOS ? Transcriber.iosCaptionStaleMs : Transcriber.captionStaleMs;
+  }
+
+  /**
+   * 録音中にユーザへ「再開」を見せるか。自動復帰だけに任せない。
+   * @returns {boolean}
+   */
+  shouldShowManualResume() {
+    if (!this.shouldRestart || !this.isListening) return false;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    if (this._resumeNeeded || this._resumeWhenVisible) return true;
+    if (this._hold) return this.isCaptionStalled();
+    const msResult = this.msSinceResult();
+    if (this._gotHypothesis && msResult >= this._captionStaleThresholdMs()) return true;
+    return this.needsResume() || this.isCaptionStalled();
+  }
+
   needsResume() {
     if (!this.shouldRestart || !this.isListening) return false;
     if (this._hold) {
@@ -611,10 +658,18 @@ class Transcriber {
       return false;
     }
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
-    if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs) return false;
-    if (this._restartTimer) return false;
+    const msResult = this.msSinceResult();
+    const stale = msResult >= this._captionStaleThresholdMs();
+    if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs && !stale) {
+      return false;
+    }
+    if (this._restartTimer && !stale) return false;
     if (this._resumeNeeded) return true;
-    if (this._engineRunning) return this.isCaptionStalled();
+    if (this.isCaptionStalled()) return true;
+    if (this._engineRunning) {
+      if (this._isIOS && stale && this._gotHypothesis) return true;
+      return false;
+    }
     return true;
   }
 
@@ -629,17 +684,29 @@ class Transcriber {
     }
     if (this._hold) return false;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
-    if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs) return false;
-    if (this._restartTimer) return false;
-    if ((this.interimTranscript || '').trim()) return false;
+    const staleMs = this._captionStaleThresholdMs();
+    const msResult = this.msSinceResult();
+    const stale = msResult >= staleMs;
+    if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs && !stale) {
+      return false;
+    }
+    if (this._restartTimer && !stale) return false;
+
+    const interim = (this.interimTranscript || '').trim();
+    if (interim) {
+      const interimMs = this._lastInterimAt
+        ? Date.now() - this._lastInterimAt
+        : msResult;
+      if (interimMs < staleMs) return false;
+    }
 
     const now = Date.now();
-    const sinceEngine = this._sessionStartedAt ? now - this._sessionStartedAt : this.msSinceResult();
+    const sinceEngine = this._sessionStartedAt ? now - this._sessionStartedAt : msResult;
     if (!this._gotHypothesis) {
       const bootMs = this._isIOS ? Transcriber.iosCaptionBootMs : Transcriber.captionBootMs;
       return sinceEngine >= bootMs;
     }
-    return this.msSinceResult() >= Transcriber.captionStaleMs;
+    return stale;
   }
 
   /**
@@ -648,13 +715,30 @@ class Transcriber {
    */
   reviveLiveCaption() {
     if (!this.shouldRestart || !this.isListening) return false;
+    if (this._resumeNeeded) return false;
     if (!this.isCaptionStalled()) return false;
     if (this._lastReviveAt && Date.now() - this._lastReviveAt < 2500) return false;
+    if (this._stallReviveCount >= Transcriber.manualResumeAfterRevives) {
+      this._signalResumeNeeded();
+      return false;
+    }
     this._lastReviveAt = Date.now();
+    this._stallReviveCount++;
 
     if (!this._engineRunning) {
       this._clearRestartTimer();
       this._restartNow();
+      return true;
+    }
+
+    if (this._isIOS) {
+      this._clearRestartTimer();
+      this._commitPendingInterim();
+      this.interimTranscript = '';
+      this._lastInterimAt = 0;
+      this._lastInterimNorm = '';
+      this._restartNow();
+      if (this.onResult) this.onResult(this.finalTranscript, this.interimTranscript);
       return true;
     }
 
@@ -674,7 +758,7 @@ class Transcriber {
       return this._unwedgeJaSession();
     }
 
-    if (this._isIOS && !this._gotHypothesis) {
+    if (!this._gotHypothesis) {
       this._clearRestartTimer();
       this._restartNow();
       return true;
@@ -1201,6 +1285,12 @@ class Transcriber {
   static repeatWindowMs = 22000;
 
   /**
+   * 日本語の確定・暫定をつなぐときに見る最大オーバーラップ（plain 文字）。
+   * 24 だと歌詞級の再送で境界が二重になり、字幕が読めなくなる。
+   */
+  static jaOverlapMax = 128;
+
+  /**
    * これより短い自動再起動では「再開」を出さない。iOS の発話ごとの切れ目で点滅させない。
    */
   static resumeGapMs = 1200;
@@ -1229,6 +1319,16 @@ class Transcriber {
    * 仮説のあと結果が途切れたときの字幕停止。jaStaleStopMs と揃える。
    */
   static captionStaleMs = 4500;
+
+  /**
+   * iOS は発話ごとに onend があり、desktop より早く「止まった」ように見える。
+   */
+  static iosCaptionStaleMs = 3200;
+
+  /**
+   * この回数だけ自動付け直ししたあとは、タップ用の「再開」を出す。
+   */
+  static manualResumeAfterRevives = 2;
 
   /**
    * iOS だけ発話ごとに終わらせて onend で付け直す。
@@ -1474,7 +1574,7 @@ class Transcriber {
     const fa = Transcriber._foldJaDigits(a);
     const fb = Transcriber._foldJaDigits(b);
     if (fa === fb) return a;
-    const max = Math.min(fa.length, fb.length, 24);
+    const max = Math.min(fa.length, fb.length, Transcriber.jaOverlapMax);
     for (let len = max; len >= 4; len--) {
       if (fa.slice(-len) === fb.slice(0, len)) return a.slice(0, -len) + b;
     }
@@ -1601,11 +1701,57 @@ class Transcriber {
     if (!foldI) return '';
     if (foldC.endsWith(foldI)) return '';
     if (foldI.startsWith(foldC)) return Transcriber._slicePlain(pending, foldC.length);
-    const max = Math.min(foldC.length, foldI.length, 24);
+    const max = Math.min(foldC.length, foldI.length, Transcriber.jaOverlapMax);
     for (let len = max; len >= 4; len--) {
       if (foldC.slice(-len) === foldI.slice(0, len)) return Transcriber._slicePlain(pending, len);
     }
     return raw;
+  }
+
+  /**
+   * 確定末尾に同じ塊が二重になったとき、外側の繰り返しだけ取る（接頭辞は触らない）。
+   * @param {string} text
+   * @param {string} [anchorRaw]
+   * @returns {string}
+   */
+  static collapseAdjacentJaRepeats(text, anchorRaw) {
+    const raw = (text || '').trim();
+    if (!raw) return '';
+    const anchor = (anchorRaw || '').trim();
+    const head = anchor && raw.startsWith(anchor) ? anchor : '';
+    let tail = head ? raw.slice(head.length) : raw;
+    if (!tail) return raw;
+    let norm = Transcriber._foldJaDigits(Transcriber._plain(tail));
+    let changed = true;
+    while (changed && norm.length >= 16) {
+      changed = false;
+      const cap = Math.min(Math.floor(norm.length / 2), Transcriber.jaOverlapMax);
+      for (let unit = cap; unit >= 8; unit--) {
+        if (norm.slice(-unit) !== norm.slice(-2 * unit, -unit)) continue;
+        tail = Transcriber._trimLastPlain(tail, unit);
+        norm = Transcriber._foldJaDigits(Transcriber._plain(tail));
+        changed = true;
+        break;
+      }
+    }
+    return head + tail;
+  }
+
+  /**
+   * @param {string} raw
+   * @param {number} plainLen
+   * @returns {string}
+   */
+  static _trimLastPlain(raw, plainLen) {
+    const trimmed = (raw || '').trim();
+    if (!plainLen) return trimmed;
+    let counted = 0;
+    let i = trimmed.length;
+    while (i > 0 && counted < plainLen) {
+      i -= 1;
+      if (!/[\s\u3000。、！？!?.,]/.test(trimmed[i])) counted += 1;
+    }
+    return trimmed.slice(0, i).replace(/[\s\u3000。、！？!?.,]+$/g, '');
   }
 
   /**
@@ -1786,8 +1932,14 @@ class Transcriber {
     }
     if (nextNorm.length < 4) return false;
     if (rows.some((row) => row.norm === nextNorm)) return true;
-    if (nextNorm.length >= 8) {
-      return rows.some((row) => row.norm.length > nextNorm.length && row.norm.includes(nextNorm));
+    if (nextNorm.length >= 8 && sinceChunk < Transcriber.repeatWindowMs) {
+      if (rows.some((row) => row.norm.length > nextNorm.length && (
+        row.norm.endsWith(nextNorm) || row.norm.startsWith(nextNorm)
+      ))) return true;
+      if (committedNew.length >= nextNorm.length) {
+        if (committedNew.endsWith(nextNorm)) return true;
+        if (committedNew.startsWith(nextNorm)) return true;
+      }
     }
     return false;
   }
@@ -1856,6 +2008,12 @@ class Transcriber {
       const current = this.finalTranscript || '';
       const base = current.slice(0, Math.max(0, current.length - last.length));
       this.finalTranscript = this._joinTranscript(base.trim(), next);
+      if (this.language === 'ja-JP') {
+        this.finalTranscript = Transcriber.collapseAdjacentJaRepeats(
+          this.finalTranscript,
+          this._dedupeAnchorRaw
+        );
+      }
       this._lastChunk = next;
       this._lastChunkAt = now;
       this._lastFromInterim = false;
@@ -1876,6 +2034,12 @@ class Transcriber {
     }
 
     this.finalTranscript = this._joinTranscript(this.finalTranscript, next);
+    if (this.language === 'ja-JP') {
+      this.finalTranscript = Transcriber.collapseAdjacentJaRepeats(
+        this.finalTranscript,
+        this._dedupeAnchorRaw
+      );
+    }
     this._lastChunk = next;
     this._lastChunkAt = now;
     this._lastFromInterim = false;

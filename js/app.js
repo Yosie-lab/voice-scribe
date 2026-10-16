@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v76';
+const APP_BUILD = 'v80';
 
 class VoiceScribeApp {
   constructor() {
@@ -172,12 +172,11 @@ class VoiceScribeApp {
       });
     }
 
+    const resumeTap = () => this._resumeReading();
     const resumeBtn = document.getElementById('resume-reading-btn');
-    if (resumeBtn) {
-      resumeBtn.addEventListener('click', () => {
-        this._resumeReading();
-      });
-    }
+    if (resumeBtn) resumeBtn.addEventListener('click', resumeTap);
+    const resumeHeaderBtn = document.getElementById('resume-reading-header-btn');
+    if (resumeHeaderBtn) resumeHeaderBtn.addEventListener('click', resumeTap);
     this.transcriber.onListeningChange = () => {
       this._syncResumeReading();
     };
@@ -443,14 +442,26 @@ class VoiceScribeApp {
     const createdAt = this._sessionCreatedAt || Date.now();
     const priorParts = (this._priorParts || []).filter((blob) => blob && blob.size);
     const priorDuration = this._priorDuration || 0;
+    this.recorder.flush();
+    await this._awaitCheckpointIdle();
     const peeked = this.recorder.peekBlob();
     // stop() が onstop を待って固まっても、先に同じ ID へ書いて UI を戻す。
-    this._checkpointRecording();
+    this._checkpointRecording({ force: true });
     this.transcriber.stop();
 
     let newTake = peeked.blob;
-    let audioMime = peeked.mimeType || 'audio/mp4';
+    let audioMime = peeked.mimeType || this._priorMime || 'audio/mp4';
     let segmentDuration = this.recorder.getElapsedTime() || 0;
+    let stopParts = this._mergeAudioParts(priorParts, newTake || this._checkpointBlob);
+    this._stageDraftFromStop({
+      id: sessionId,
+      parts: stopParts,
+      mimeType: audioMime,
+      transcript,
+      duration: priorDuration + (newTake ? segmentDuration : 0),
+      language,
+      createdAt
+    });
     this._finishRecordingUi(transcript, uiEpoch);
 
     try {
@@ -459,14 +470,26 @@ class VoiceScribeApp {
         newTake = recResult.blob;
         audioMime = recResult.mimeType || audioMime;
         if (typeof recResult.duration === 'number') segmentDuration = recResult.duration;
+      } else if (!newTake && this._checkpointBlob) {
+        newTake = this._checkpointBlob;
       }
     } catch (e) {
       console.warn('Recorder stop warning:', e);
+      if (!newTake && this._checkpointBlob) newTake = this._checkpointBlob;
     }
+    stopParts = this._mergeAudioParts(priorParts, newTake);
+    this._stageDraftFromStop({
+      id: sessionId,
+      parts: stopParts,
+      mimeType: audioMime,
+      transcript,
+      duration: priorDuration + (newTake ? segmentDuration : 0),
+      language,
+      createdAt
+    });
 
     try {
-      let parts = priorParts.slice();
-      if (newTake) parts.push(newTake);
+      let parts = stopParts.length ? stopParts.slice() : this._mergeAudioParts(priorParts, newTake);
       const kept = await this._savedSession(sessionId);
       if (!parts.length && kept) parts = this._audioParts(kept);
       transcript = this._collapseResumeTranscript(transcript);
@@ -692,6 +715,57 @@ class VoiceScribeApp {
    * @param {Object} recording
    * @private
    */
+  /**
+   * 停止直後に IndexedDB の完了を待たず、再生ボタンだけ先に出す。
+   * @private
+   */
+  _stageDraftFromStop({ id, parts, mimeType, transcript, duration, language, createdAt }) {
+    if (!id) return;
+    const blobs = (parts || []).filter((blob) => blob && blob.size);
+    const text = (transcript || '').trim();
+    if (!blobs.length && !text) return;
+    this._draftId = id;
+    if (text) this._draftTranscript = text;
+    this._draftCreatedAt = createdAt || this._draftCreatedAt || Date.now();
+    this._draftLanguage = language || this._draftLanguage || 'ja-JP';
+    if (typeof duration === 'number' && duration >= 0) this._draftDuration = duration;
+    this._draftMime = mimeType || this._draftMime || (blobs[0] && blobs[0].type) || 'audio/mp4';
+    if (blobs.length > 1) {
+      this._draftSegments = blobs;
+      this._draftBlob = blobs[0];
+    } else if (blobs.length === 1) {
+      this._draftBlob = blobs[0];
+      this._draftSegments = null;
+    }
+    this._syncDraftControls();
+  }
+
+  /**
+   * @param {Blob[]} prior
+   * @param {Blob|null} fresh
+   * @returns {Blob[]}
+   * @private
+   */
+  _mergeAudioParts(prior, fresh) {
+    const base = (prior || []).filter((blob) => blob && blob.size);
+    if (fresh && fresh.size) return base.concat([fresh]);
+    return base.slice();
+  }
+
+  /**
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _awaitCheckpointIdle() {
+    for (let i = 0; i < 40 && this._checkpointing; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
+  /**
+   * @param {Object} recording
+   * @private
+   */
   _rememberDraft(recording) {
     if (!recording || !recording.id) return;
     this._draftId = recording.id;
@@ -783,8 +857,10 @@ class VoiceScribeApp {
    * テキストは localStorage、音声 Blob は IndexedDB。Blob は localStorage に入れない。
    * @private
    */
-  _checkpointRecording() {
-    if (this._checkpointing || !this.isRecording || !this.currentRecordingId) return;
+  _checkpointRecording(options) {
+    const force = !!(options && options.force);
+    if (this._checkpointing || !this.currentRecordingId) return;
+    if (!force && !this.isRecording) return;
     this._checkpointing = true;
     const gen = ++this._checkpointGen;
     try {
@@ -987,7 +1063,7 @@ class VoiceScribeApp {
       }
       const target = event.target;
       // クリアは次の click に任せる。このリスナはイベントを止めない。
-      if (target && target.closest && target.closest('#record-btn, #pause-btn, #clear-transcript-btn, #continue-recording-btn, #draft-play-btn, #resume-reading-btn')) return;
+      if (target && target.closest && target.closest('#record-btn, #pause-btn, #clear-transcript-btn, #continue-recording-btn, #draft-play-btn, #resume-reading-btn, #resume-reading-header-btn')) return;
       if (this.transcriber.isEngineRunning()) {
         document.removeEventListener('pointerdown', onPointer, true);
         this._recognitionGesture = null;
@@ -1094,6 +1170,8 @@ class VoiceScribeApp {
       this.transcriber.continueListening();
     }
     this._recoverAttempts = 0;
+    this.transcriber._stallReviveCount = 0;
+    this.transcriber._resumeNeeded = false;
     this._syncResumeReading();
   }
 
@@ -1103,15 +1181,18 @@ class VoiceScribeApp {
    */
   _syncResumeReading() {
     const btn = document.getElementById('resume-reading-btn');
-    if (!btn || !this.transcriber) return;
+    const headerBtn = document.getElementById('resume-reading-header-btn');
+    if (!this.transcriber) return;
+    const targets = [btn, headerBtn].filter(Boolean);
+    if (!targets.length) return;
     if (document.visibilityState === 'hidden') {
-      btn.style.display = 'none';
+      targets.forEach((el) => { el.style.display = 'none'; });
       return;
     }
-    const recognitionDown = this.transcriber.needsResume()
-      || this.transcriber.isCaptionStalled();
+    const captureDown = !!(this.recorder && this.recorder.needsRecovery());
+    const recognitionDown = this.transcriber.shouldShowManualResume() || captureDown;
     const show = !!(this.isRecording && !this._userPaused && recognitionDown);
-    btn.style.display = show ? 'inline-flex' : 'none';
+    targets.forEach((el) => { el.style.display = show ? 'inline-flex' : 'none'; });
   }
 
   /**
@@ -1139,10 +1220,12 @@ class VoiceScribeApp {
       this.transcriber.shouldRestart = true;
       this.transcriber.isListening = true;
     }
+    this._syncResumeReading();
+    if (this.transcriber._resumeNeeded) return;
     if (this.transcriber.isCaptionStalled()) {
       this.transcriber.reviveLiveCaption();
+      this._syncResumeReading();
     }
-    this._syncResumeReading();
   }
 
   /**
@@ -1486,7 +1569,7 @@ class VoiceScribeApp {
       '・<b>横画面</b>にする: コントロールセンター → 「画面の向きをロック」を OFF にしてから端末を横に。<br>',
       '・<b>ホーム画面</b>から起動している場合: アイコンを削除 → Safari で ',
       '<a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener">yosie-lab.github.io/voice-scribe</a>',
-      ' を開く → ⚙️ でビルド v76 を確認 → 共有 → ホーム画面に追加。',
+      ' を開く → ⚙️ でビルド v80 を確認 → 共有 → ホーム画面に追加。',
       '<br>今朝のアップデートで向きがおかしくなった場合も、上と同じ手順で古いホーム画面アイコンを消してください。'
     ].join('');
   }
@@ -2173,7 +2256,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=76');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=80');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();

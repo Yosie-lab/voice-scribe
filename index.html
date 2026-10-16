@@ -13,13 +13,13 @@
   <title>VoiceScribe — 文字起こしボイスレコーダー</title>
 
   <!-- PWAマニフェスト -->
-  <link rel="manifest" href="manifest.json?v=76">
+  <link rel="manifest" href="manifest.json?v=80">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" sizes="192x192" href="icons/icon-192.png">
   <link rel="apple-touch-icon" sizes="512x512" href="icons/icon-512.png">
 
   <!-- スタイルシート -->
-  <link rel="stylesheet" href="css/style.css?v=76">
+  <link rel="stylesheet" href="css/style.css?v=80">
 
   <!-- ファビコン -->
   <link rel="icon" href="icons/icon-192.png" type="image/png">
@@ -96,6 +96,7 @@
         <div class="transcript-header-bar">
           <span class="transcript-title-label">📝 リアルタイム文字起こし</span>
           <div class="header-bar-actions">
+            <button class="action-pill-btn resume-reading-pill" id="resume-reading-header-btn" type="button" title="文字起こしを再開" style="display:none;">再開</button>
             <button class="action-pill-btn" id="quick-copy-btn" title="テキストをコピー">📋 コピー</button>
             <button class="action-pill-btn continue-pill" id="continue-recording-btn" title="同じ録音の続きを録る" style="display:none;">続きを録音</button>
             <button class="action-pill-btn" id="draft-play-btn" title="保存した音声を再生" style="display:none;">再生</button>
@@ -317,13 +318,13 @@
   </div>
 
   <!-- ===== JavaScript モジュール ===== -->
-  <script src="js/storage.js?v=76"></script>
-  <script src="js/recorder.js?v=76"></script>
-  <script src="js/transcriber.js?v=76"></script>
-  <script src="js/whisper.js?v=76"></script>
-  <script src="js/visualizer.js?v=76"></script>
-  <script src="js/obsidian.js?v=76"></script>
-  <script src="js/ui.js?v=76"></script>
-  <script src="js/app.js?v=76"></script>
+  <script src="js/storage.js?v=80"></script>
+  <script src="js/recorder.js?v=80"></script>
+  <script src="js/transcriber.js?v=80"></script>
+  <script src="js/whisper.js?v=80"></script>
+  <script src="js/visualizer.js?v=80"></script>
+  <script src="js/obsidian.js?v=80"></script>
+  <script src="js/ui.js?v=80"></script>
+  <script src="js/app.js?v=80"></script>
 </body>
 </html>

@@ -598,11 +598,11 @@ assert(viz.includes('getSpeechPeak'), 'frame peak for short bursts');
 assert(viz.includes('_sampleSpeechPeak'), 'peak is sampled while drawing');
 assert(app.includes('usePeak'), 'desktop ja watch reads the peak');
 assert(app.includes('speechHotFlags'), 'stall does not reuse the gap peak');
-assert(!index.includes('v=75'), 'index cache bust left 75');
-assert(!index.includes('v=74'), 'index cache bust left 74');
-assert(index.includes('v=76'), 'index is v76');
-assert(sw.includes("voicescribe-v76"), 'sw cache name');
-assert(!sw.includes('voicescribe-v75'), 'old sw name gone');
+assert(!index.includes('v=79'), 'index cache bust left 79');
+assert(!index.includes('v=78'), 'index cache bust left 78');
+assert(index.includes('v=80'), 'index is v80');
+assert(sw.includes("voicescribe-v80"), 'sw cache name');
+assert(!sw.includes('voicescribe-v79'), 'old sw name gone');
 const manifest = fs.readFileSync(path.join(root, 'manifest.json'), 'utf8');
 assert(!manifest.includes('portrait-primary'), 'PWA does not lock portrait-primary');
 assert(!manifest.includes('"orientation"'), 'manifest does not declare orientation lock');
@@ -610,9 +610,16 @@ assert(manifest.includes('"id": "./"'), 'manifest id stays stable for iOS home s
 assert(!app.includes('navigator.wakeLock.request'), 'wake lock does not block device lock');
 assert(!app.includes('screen.orientation.unlock'), 'no orientation unlock calls on iOS');
 assert(app.includes('_syncViewportHeight'), 'viewport resync on rotate for iOS Safari');
-assert(app.includes("APP_BUILD = 'v76'"), 'app build tag is v76');
+assert(app.includes("APP_BUILD = 'v80'"), 'app build tag is v80');
+assert(app.includes('resume-reading-header-btn'), 'header resume syncs with deck resume');
+assert(app.includes('shouldShowManualResume'), 'app uses manual resume visibility');
+assert(transcriberSrc.includes('shouldShowManualResume'), 'transcriber exposes manual resume');
+assert(transcriberSrc.includes('iosCaptionStaleMs'), 'ios has its own stale threshold');
+assert(app.includes('_stageDraftFromStop'), 'stop shows draft play before save finishes');
+assert(transcriberSrc.includes('jaOverlapMax'), 'long ja overlap cap is named');
+assert(transcriberSrc.includes('collapseAdjacentJaRepeats'), 'adjacent ja repeats collapse after commit');
 assert(app.includes('app-ios-rotation-hint'), 'settings explain iPhone rotation limits');
-assert(app.includes('sw.js?v=76'), 'service worker registration is cache-busted');
+assert(app.includes('sw.js?v=80'), 'service worker registration is cache-busted');
 assert(transcriberSrc.includes('_cleanLiveInterim'), 'interim repeat uses the commit dedupe window');
 assert(transcriberSrc.includes('setContinuedPrefix'), 'resume prefix is excluded from dedupe anchor');
 assert(transcriberSrc.includes('iosCaptionBootMs'), 'ios waits longer before caption stall revive');
@@ -693,6 +700,7 @@ assert(!resumeFn.includes('getUserMedia'), 'resume does not open a second microp
 assert(resumeFirst !== -1 && resumeCap !== -1 && resumeFirst < resumeCap, 'iOS resume starts recognition inside the tap');
 assert(resumeLast > resumeCap, 'desktop resume starts recognition after capture');
 assert(index.includes('id="resume-reading-btn"'), 'resume button is in the page');
+assert(index.includes('id="resume-reading-header-btn"'), 'resume pill is in the transcript header');
 assert(index.includes('>再開<'), 'resume button label');
 assert(css.includes('.resume-reading-btn'), 'resume button is styled in the control deck');
 const recoverFn = methodBody(app, 'async _recoverActiveRecordingBody() {');
@@ -888,7 +896,8 @@ function wait(ms) {
 }
 
 const LINE = '桜の花びらが舞う夜に私は静かに歌い続けているよ今夜も';
-assert(Transcriber._plain(LINE).length > 24, 'lyric fixture is longer than the 24-char overlap cap');
+assert(Transcriber._plain(LINE).length > 24, 'lyric fixture is longer than a short overlap');
+assert(Transcriber.jaOverlapMax >= Transcriber._plain(LINE).length, 'ja overlap cap covers the lyric fixture');
 assert(Transcriber.repeatWindowMs > Transcriber.jaStaleStopMs, 'repeat window covers a stale stop');
 assert(Transcriber.repeatWindowMs > Transcriber.jaResultGraceMs, 'repeat window covers the late-hypothesis grace');
 assert(Transcriber.repeatWindowMs > 2200, 'repeat window is longer than the old merge window');
@@ -947,6 +956,17 @@ assert(countSpan(iosLoop.finalTranscript, LINE) === 1, 'ios loop final for a rec
 iosLoop.stop();
 
 assert(Transcriber.mergeJapaneseOverlap(LINE, LINE) === LINE, 'joining identical ja chunks does not duplicate');
+const longLeft = `${LINE}川を越えて`;
+const longRight = `${LINE}川を越えて行く`;
+assert(
+  Transcriber.mergeJapaneseOverlap(longLeft, longRight) === longRight,
+  'long ja overlap joins without duplicating the lyric head'
+);
+const doubledTail = `${LINE}${LINE}`;
+assert(
+  Transcriber.collapseAdjacentJaRepeats(doubledTail) === LINE,
+  'adjacent duplicate lyric tail collapses to one'
+);
 
 const tailResend = new Transcriber();
 tailResend.language = 'ja-JP';
@@ -986,11 +1006,25 @@ assert(resumeUi.needsResume() === false, 'running recognition with fresh caption
 resumeUi._sessionStartedAt = Date.now() - (Transcriber.captionBootMs + 500);
 assert(resumeUi.needsResume() === true, 'running engine with no hypothesis shows 再開');
 resumeUi._engineRunning = false;
+resumeUi._lastResultAt = Date.now();
 resumeUi._restartTimer = setTimeout(() => {}, 60000);
 resumeUi._restartDelayMs = 35;
 assert(resumeUi.needsResume() === false, 'a short auto restart hides 再開');
 resumeUi._restartDelayMs = Transcriber.jaResultGraceMs;
 assert(resumeUi.needsResume() === false, 'scheduled auto-restart hides 再開');
+resumeUi._lastResultAt = Date.now() - (Transcriber.captionStaleMs + 500);
+assert(resumeUi.needsResume() === true, 'stalled captions show 再開 even during auto-restart');
+const iosStallUi = new Transcriber();
+iosStallUi.language = 'ja-JP';
+iosStallUi._isIOS = true;
+iosStallUi.shouldRestart = true;
+iosStallUi.isListening = true;
+iosStallUi._gotHypothesis = true;
+iosStallUi._lastResultAt = Date.now() - (Transcriber.iosCaptionStaleMs + 500);
+assert(iosStallUi.shouldShowManualResume() === true, 'ios stale captions offer manual resume');
+iosStallUi._stallReviveCount = Transcriber.manualResumeAfterRevives;
+assert(iosStallUi.reviveLiveCaption() === false, 'ios stops auto revive and asks for manual resume');
+assert(iosStallUi._resumeNeeded === true, 'ios manual resume flag is set');
 clearTimeout(resumeUi._restartTimer);
 resumeUi._restartTimer = null;
 resumeUi._restartDelayMs = 0;
