@@ -521,6 +521,9 @@ class UIManager {
       }
       fillObsidianFields();
       if (statusBox) statusBox.innerHTML = '';
+      if (window.app && typeof window.app.refreshDiagnostics === 'function') {
+        window.app.refreshDiagnostics();
+      }
       this.settingsModal.classList.add('active');
     });
 

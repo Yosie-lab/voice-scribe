@@ -3,6 +3,9 @@
  * 各モジュール（Storage, Recorder, Transcriber, Whisper, Visualizer, UI）を統合管理
  */
 
+/** @type {string} 設定画面とコンソールで確認するビルド番号 */
+const APP_BUILD = 'v72';
+
 class VoiceScribeApp {
   constructor() {
     this.storage = new StorageManager();
@@ -86,6 +89,7 @@ class VoiceScribeApp {
       // 各画面のイベントリスナー設定
       this._setupRecordView();
       this._bindRecordingLifecycle();
+      this._bindDisplayFreedom();
       this._setupListView();
       this._setupDetailView();
 
@@ -103,8 +107,9 @@ class VoiceScribeApp {
       await this._refreshRecordingsList();
 
       await this._freeDeviceDisplay();
+      this.refreshDiagnostics();
 
-      console.log('VoiceScribe 初期化完了 (v71)');
+      console.log(`VoiceScribe 初期化完了 (${APP_BUILD})`);
     } catch (error) {
       console.error('VoiceScribe 初期化エラー:', error);
     }
@@ -291,6 +296,7 @@ class VoiceScribeApp {
     this.isRecording = true;
     this._userPaused = false;
     this._recoverAttempts = 0;
+    await this._freeDeviceDisplay();
     this._checkpointBlob = null;
     if (prior) {
       const parts = this._audioParts(prior);
@@ -1437,6 +1443,43 @@ class VoiceScribeApp {
   }
 
   /**
+   * 設定モーダル用。ビルド番号と現在の画面向きを表示する。
+   */
+  refreshDiagnostics() {
+    const el = document.getElementById('app-build-info');
+    if (!el) return;
+    const type = screen.orientation && screen.orientation.type
+      ? screen.orientation.type
+      : (window.innerWidth > window.innerHeight ? 'landscape' : 'portrait');
+    const angle = screen.orientation && typeof screen.orientation.angle === 'number'
+      ? `${screen.orientation.angle}°`
+      : '';
+    const mode = window.navigator.standalone === true
+      || window.matchMedia('(display-mode: standalone)').matches
+      ? 'ホーム画面'
+      : 'ブラウザ';
+    const reinstallHint = mode === 'ホーム画面'
+      ? ' · 回転しないときはアイコン削除→Safariで再追加'
+      : '';
+    el.textContent = `ビルド ${APP_BUILD} · ${mode} · 向き ${type}${angle ? ` (${angle})` : ''}${reinstallHint}`;
+  }
+
+  /**
+   * OS の向き変更のたびに、アプリ側の向き固定を解除する。
+   * @private
+   */
+  _bindDisplayFreedom() {
+    window.addEventListener('pageshow', () => {
+      this._freeDeviceDisplay();
+      this.refreshDiagnostics();
+    });
+    window.addEventListener('orientationchange', () => {
+      this._freeDeviceDisplay();
+      this.refreshDiagnostics();
+    });
+  }
+
+  /**
    * 画面スリープ固定・向き固定をアプリ側で残さない。録音中も Wake Lock は取らない。
    * @private
    */
@@ -2099,7 +2142,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=71');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=72');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();
