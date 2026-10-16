@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v75';
+const APP_BUILD = 'v76';
 
 class VoiceScribeApp {
   constructor() {
@@ -608,8 +608,7 @@ class VoiceScribeApp {
    */
   _primeContinuedTranscript() {
     if (!this._resumePrefix) return;
-    this.transcriber.finalTranscript = this._resumePrefix;
-    this.transcriber.interimTranscript = '';
+    this.transcriber.setContinuedPrefix(this._resumePrefix);
     this._bestTranscript = this._longerText(this._bestTranscript, this._resumePrefix);
     if (this.isRecording) this.ui.updateTranscript(this._resumePrefix, '', true);
   }
@@ -1131,7 +1130,9 @@ class VoiceScribeApp {
    */
   _checkCaptionHealth() {
     if (!this.isRecording || this._userPaused || document.visibilityState === 'hidden') return;
-    if (this.transcriber._hold || this.transcriber._resumeWhenVisible) {
+    if (this.transcriber._hold) {
+      this.transcriber.resumeAfterBackground();
+    } else if (this.transcriber._resumeWhenVisible && !this.transcriber.isEngineRunning()) {
       this.transcriber.resumeAfterBackground();
     }
     if (!this.transcriber.isListening) {
@@ -1485,7 +1486,7 @@ class VoiceScribeApp {
       '・<b>横画面</b>にする: コントロールセンター → 「画面の向きをロック」を OFF にしてから端末を横に。<br>',
       '・<b>ホーム画面</b>から起動している場合: アイコンを削除 → Safari で ',
       '<a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener">yosie-lab.github.io/voice-scribe</a>',
-      ' を開く → ⚙️ でビルド v75 を確認 → 共有 → ホーム画面に追加。',
+      ' を開く → ⚙️ でビルド v76 を確認 → 共有 → ホーム画面に追加。',
       '<br>今朝のアップデートで向きがおかしくなった場合も、上と同じ手順で古いホーム画面アイコンを消してください。'
     ].join('');
   }
@@ -2172,7 +2173,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=75');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=76');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();
