@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v73';
+const APP_BUILD = 'v74';
 
 class VoiceScribeApp {
   constructor() {
@@ -89,7 +89,7 @@ class VoiceScribeApp {
       // 各画面のイベントリスナー設定
       this._setupRecordView();
       this._bindRecordingLifecycle();
-      this._bindDisplayFreedom();
+      this._bindViewportSync();
       this._setupListView();
       this._setupDetailView();
 
@@ -106,7 +106,7 @@ class VoiceScribeApp {
       // 録音一覧の初回読み込み
       await this._refreshRecordingsList();
 
-      await this._freeDeviceDisplay();
+      this._syncViewportHeight();
       this.refreshDiagnostics();
 
       console.log(`VoiceScribe 初期化完了 (${APP_BUILD})`);
@@ -296,7 +296,7 @@ class VoiceScribeApp {
     this.isRecording = true;
     this._userPaused = false;
     this._recoverAttempts = 0;
-    await this._freeDeviceDisplay();
+    this._syncViewportHeight();
     this._checkpointBlob = null;
     if (prior) {
       const parts = this._audioParts(prior);
@@ -572,7 +572,7 @@ class VoiceScribeApp {
     this._backgrounded = false;
     this._stopSpeechWatch();
     this._stopCaptionWatch();
-    this._freeDeviceDisplay();
+    this._syncViewportHeight();
     this._stopTimer();
 
     if (this.visualizer) {
@@ -1283,7 +1283,7 @@ class VoiceScribeApp {
   _bindRecordingLifecycle() {
     const onHide = () => this._onRecordingHidden();
     const onShow = () => {
-      if (!this.isRecording) this._freeDeviceDisplay();
+      if (!this.isRecording) this._syncViewportHeight();
       this._scheduleForegroundWork();
     };
     document.addEventListener('visibilitychange', () => {
@@ -1302,7 +1302,7 @@ class VoiceScribeApp {
   _onRecordingHidden() {
     if (!this.isRecording) return;
     this._backgrounded = true;
-    this._freeDeviceDisplay();
+    this._syncViewportHeight();
     this.recorder.flush();
     if (!this._userPaused) this.transcriber.holdForBackground();
     this._checkpointRecording();
@@ -1485,42 +1485,41 @@ class VoiceScribeApp {
       '・<b>横画面</b>にする: コントロールセンター → 「画面の向きをロック」を OFF にしてから端末を横に。<br>',
       '・<b>ホーム画面</b>から起動している場合: アイコンを削除 → Safari で ',
       '<a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener">yosie-lab.github.io/voice-scribe</a>',
-      ' を開く → ⚙️ でビルド v73 を確認 → 共有 → ホーム画面に追加。'
+      ' を開く → ⚙️ でビルド v74 を確認 → 共有 → ホーム画面に追加。',
+      '<br>今朝のアップデートで向きがおかしくなった場合も、上と同じ手順で古いホーム画面アイコンを消してください。'
     ].join('');
   }
 
   /**
-   * OS の向き変更のたびに、アプリ側の向き固定を解除する。
+   * iOS Safari は回転後も 100dvh が古い値のままになることがある。実測高さで上書きする。
    * @private
    */
-  _bindDisplayFreedom() {
-    window.addEventListener('pageshow', () => {
-      this._freeDeviceDisplay();
-      this.refreshDiagnostics();
-    });
-    window.addEventListener('orientationchange', () => {
-      this._freeDeviceDisplay();
-      this.refreshDiagnostics();
-    });
-    if (screen.orientation && typeof screen.orientation.addEventListener === 'function') {
-      screen.orientation.addEventListener('change', () => {
-        this._freeDeviceDisplay();
-        this.refreshDiagnostics();
-      });
+  _syncViewportHeight() {
+    const h = window.visualViewport && window.visualViewport.height
+      ? window.visualViewport.height
+      : window.innerHeight;
+    if (h > 0) {
+      document.documentElement.style.setProperty('--app-height', `${Math.round(h)}px`);
     }
   }
 
   /**
-   * 画面スリープ固定・向き固定をアプリ側で残さない。録音中も Wake Lock は取らない。
+   * 回転・リサイズのたびにレイアウト高さを実測に合わせる（向き固定 API は使わない）。
    * @private
    */
-  async _freeDeviceDisplay() {
-    try {
-      if (screen.orientation && typeof screen.orientation.unlock === 'function') {
-        await screen.orientation.unlock();
-      }
-    } catch {
-      // 他アプリや OS が固定している
+  _bindViewportSync() {
+    const sync = () => {
+      this._syncViewportHeight();
+      this.refreshDiagnostics();
+    };
+    window.addEventListener('pageshow', sync);
+    window.addEventListener('orientationchange', sync);
+    window.addEventListener('resize', sync);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', sync);
+    }
+    if (screen.orientation && typeof screen.orientation.addEventListener === 'function') {
+      screen.orientation.addEventListener('change', sync);
     }
   }
 
@@ -2173,7 +2172,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=73');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=74');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();
