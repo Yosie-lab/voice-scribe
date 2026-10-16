@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v72';
+const APP_BUILD = 'v73';
 
 class VoiceScribeApp {
   constructor() {
@@ -1443,10 +1443,22 @@ class VoiceScribeApp {
   }
 
   /**
+   * @returns {boolean}
+   * @private
+   */
+  _isIOSDevice() {
+    const ua = navigator.userAgent || '';
+    if (/iPhone|iPod/i.test(ua)) return true;
+    if (/iPad/i.test(ua)) return true;
+    return navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+  }
+
+  /**
    * 設定モーダル用。ビルド番号と現在の画面向きを表示する。
    */
   refreshDiagnostics() {
     const el = document.getElementById('app-build-info');
+    const iosHint = document.getElementById('app-ios-rotation-hint');
     if (!el) return;
     const type = screen.orientation && screen.orientation.type
       ? screen.orientation.type
@@ -1457,11 +1469,24 @@ class VoiceScribeApp {
     const mode = window.navigator.standalone === true
       || window.matchMedia('(display-mode: standalone)').matches
       ? 'ホーム画面'
-      : 'ブラウザ';
-    const reinstallHint = mode === 'ホーム画面'
-      ? ' · 回転しないときはアイコン削除→Safariで再追加'
-      : '';
-    el.textContent = `ビルド ${APP_BUILD} · ${mode} · 向き ${type}${angle ? ` (${angle})` : ''}${reinstallHint}`;
+      : 'Safari';
+    el.textContent = `ビルド ${APP_BUILD} · ${mode} · 向き ${type}${angle ? ` (${angle})` : ''}`;
+
+    if (!iosHint) return;
+    if (!this._isIOSDevice()) {
+      iosHint.style.display = 'none';
+      iosHint.textContent = '';
+      return;
+    }
+    iosHint.style.display = 'block';
+    iosHint.innerHTML = [
+      '<b>iPhone の画面の向き</b><br>',
+      '・<b>上下反転（逆さの縦）</b>は iPhone の仕様でほとんどの機種が非対応です。アプリ側では有効にできません。<br>',
+      '・<b>横画面</b>にする: コントロールセンター → 「画面の向きをロック」を OFF にしてから端末を横に。<br>',
+      '・<b>ホーム画面</b>から起動している場合: アイコンを削除 → Safari で ',
+      '<a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener">yosie-lab.github.io/voice-scribe</a>',
+      ' を開く → ⚙️ でビルド v73 を確認 → 共有 → ホーム画面に追加。'
+    ].join('');
   }
 
   /**
@@ -1477,6 +1502,12 @@ class VoiceScribeApp {
       this._freeDeviceDisplay();
       this.refreshDiagnostics();
     });
+    if (screen.orientation && typeof screen.orientation.addEventListener === 'function') {
+      screen.orientation.addEventListener('change', () => {
+        this._freeDeviceDisplay();
+        this.refreshDiagnostics();
+      });
+    }
   }
 
   /**
@@ -2142,7 +2173,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=72');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=73');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();
