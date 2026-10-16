@@ -235,10 +235,13 @@ class Transcriber {
         if (this.finalTranscript !== before) this._lastFromInterim = true;
       }
     }
-    this.interimTranscript = Transcriber.stripEchoInterim(
-      this.language,
+    this.interimTranscript = this._cleanLiveInterim(
       this.finalTranscript,
-      currentInterim
+      Transcriber.stripEchoInterim(
+        this.language,
+        this.finalTranscript,
+        currentInterim
+      )
     );
     if (this._speechEndedAt && this._lastResultAt > this._speechEndedAt) {
       this._clearJaSpeechEndFlush();
@@ -1174,7 +1177,7 @@ class Transcriber {
    * desktop ja の stop()+restart は jaStaleStopMs（4.5s）や jaResultGraceMs（3s）だけ空く。
    * 旧 2200ms では、再起動後に Chrome が同じ歌詞の final をもう一度出すと字幕が重複する。
    */
-  static repeatWindowMs = 12000;
+  static repeatWindowMs = 22000;
 
   /**
    * これより短い自動再起動では「再開」を出さない。iOS の発話ごとの切れ目で点滅させない。
@@ -1444,6 +1447,7 @@ class Transcriber {
     if (!a || !b) return '';
     const fa = Transcriber._foldJaDigits(a);
     const fb = Transcriber._foldJaDigits(b);
+    if (fa === fb) return a;
     const max = Math.min(fa.length, fb.length, 24);
     for (let len = max; len >= 4; len--) {
       if (fa.slice(-len) === fb.slice(0, len)) return a.slice(0, -len) + b;
@@ -1722,6 +1726,18 @@ class Transcriber {
   _isRepeatedCommit(nextNorm, now) {
     if (!nextNorm) return false;
     const rows = this._recentRows(now);
+    const committed = this._normalize(this.finalTranscript);
+    if (nextNorm.length >= 8 && committed && committed === nextNorm) return true;
+    if (nextNorm.length >= 4 && committed && committed.endsWith(nextNorm)) {
+      if (nextNorm.length >= 8) return true;
+      if (now - (this._lastChunkAt || 0) < 450) return true;
+    }
+    if (nextNorm.length >= 8 && committed && committed.includes(nextNorm) && rows.length) {
+      for (const row of rows) {
+        if (row.norm === nextNorm) return true;
+        if (row.norm.includes(nextNorm)) return true;
+      }
+    }
     if (!rows.length) return false;
     const latest = rows[rows.length - 1];
     if (latest.norm === nextNorm) {
@@ -1729,7 +1745,11 @@ class Transcriber {
       return now - latest.at < 450;
     }
     if (nextNorm.length < 4) return false;
-    return rows.some((row) => row.norm === nextNorm);
+    if (rows.some((row) => row.norm === nextNorm)) return true;
+    if (nextNorm.length >= 8) {
+      return rows.some((row) => row.norm.includes(nextNorm));
+    }
+    return false;
   }
 
   /**
@@ -1741,6 +1761,24 @@ class Transcriber {
     if (!this._touchNorm(nextNorm, now)) this._rememberNorm(nextNorm, now);
     this._lastChunkAt = now;
     this._lastFromInterim = false;
+  }
+
+  /**
+   * 歌の同一段落が暫定だけ繰り返されるのを落とす（確定側の dedupe と同じ窓）。
+   * @param {string} finalText
+   * @param {string} interim
+   * @returns {string}
+   * @private
+   */
+  _cleanLiveInterim(finalText, interim) {
+    const raw = interim || '';
+    const pending = raw.trim();
+    if (!pending || this.language !== 'ja-JP') return raw;
+    const foldI = this._normalize(pending);
+    if (!foldI || foldI.length < 8) return raw;
+    const now = Date.now();
+    if (this._isRepeatedCommit(foldI, now)) return '';
+    return raw;
   }
 
   /**
