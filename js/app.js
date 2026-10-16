@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v79';
+const APP_BUILD = 'v80';
 
 class VoiceScribeApp {
   constructor() {
@@ -1170,6 +1170,8 @@ class VoiceScribeApp {
       this.transcriber.continueListening();
     }
     this._recoverAttempts = 0;
+    this.transcriber._stallReviveCount = 0;
+    this.transcriber._resumeNeeded = false;
     this._syncResumeReading();
   }
 
@@ -1188,9 +1190,7 @@ class VoiceScribeApp {
       return;
     }
     const captureDown = !!(this.recorder && this.recorder.needsRecovery());
-    const recognitionDown = this.transcriber.needsResume()
-      || this.transcriber.isCaptionStalled()
-      || captureDown;
+    const recognitionDown = this.transcriber.shouldShowManualResume() || captureDown;
     const show = !!(this.isRecording && !this._userPaused && recognitionDown);
     targets.forEach((el) => { el.style.display = show ? 'inline-flex' : 'none'; });
   }
@@ -1220,10 +1220,12 @@ class VoiceScribeApp {
       this.transcriber.shouldRestart = true;
       this.transcriber.isListening = true;
     }
+    this._syncResumeReading();
+    if (this.transcriber._resumeNeeded) return;
     if (this.transcriber.isCaptionStalled()) {
       this.transcriber.reviveLiveCaption();
+      this._syncResumeReading();
     }
-    this._syncResumeReading();
   }
 
   /**
@@ -1567,7 +1569,7 @@ class VoiceScribeApp {
       '・<b>横画面</b>にする: コントロールセンター → 「画面の向きをロック」を OFF にしてから端末を横に。<br>',
       '・<b>ホーム画面</b>から起動している場合: アイコンを削除 → Safari で ',
       '<a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener">yosie-lab.github.io/voice-scribe</a>',
-      ' を開く → ⚙️ でビルド v79 を確認 → 共有 → ホーム画面に追加。',
+      ' を開く → ⚙️ でビルド v80 を確認 → 共有 → ホーム画面に追加。',
       '<br>今朝のアップデートで向きがおかしくなった場合も、上と同じ手順で古いホーム画面アイコンを消してください。'
     ].join('');
   }
@@ -2254,7 +2256,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=79');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=80');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();

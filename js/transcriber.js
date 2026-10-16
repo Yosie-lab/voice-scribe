@@ -65,6 +65,7 @@ class Transcriber {
     this._lastReviveAt = 0;
     this._lastInterimAt = 0;
     this._lastInterimNorm = '';
+    this._stallReviveCount = 0;
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
@@ -195,6 +196,7 @@ class Transcriber {
     this._contentionRestarts = 0;
     this._captureErrorNotified = false;
     this._lastResultAt = Date.now();
+    this._stallReviveCount = 0;
 
     let currentInterim = '';
     let currentFinal = '';
@@ -593,6 +595,7 @@ class Transcriber {
     this._hold = false;
     this._resumeWhenVisible = false;
     this._resumeNeeded = false;
+    this._stallReviveCount = 0;
     this.retryCount = 0;
     this._contentionRestarts = 0;
     this._clearRestartTimer();
@@ -624,6 +627,28 @@ class Transcriber {
    * 動いているあいだ、隠しているあいだ、発話ごとの短い切れ目では false。
    * @returns {boolean}
    */
+  /**
+   * @returns {number}
+   * @private
+   */
+  _captionStaleThresholdMs() {
+    return this._isIOS ? Transcriber.iosCaptionStaleMs : Transcriber.captionStaleMs;
+  }
+
+  /**
+   * 録音中にユーザへ「再開」を見せるか。自動復帰だけに任せない。
+   * @returns {boolean}
+   */
+  shouldShowManualResume() {
+    if (!this.shouldRestart || !this.isListening) return false;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    if (this._resumeNeeded || this._resumeWhenVisible) return true;
+    if (this._hold) return this.isCaptionStalled();
+    const msResult = this.msSinceResult();
+    if (this._gotHypothesis && msResult >= this._captionStaleThresholdMs()) return true;
+    return this.needsResume() || this.isCaptionStalled();
+  }
+
   needsResume() {
     if (!this.shouldRestart || !this.isListening) return false;
     if (this._hold) {
@@ -634,14 +659,17 @@ class Transcriber {
     }
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
     const msResult = this.msSinceResult();
-    const stale = msResult >= Transcriber.captionStaleMs;
+    const stale = msResult >= this._captionStaleThresholdMs();
     if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs && !stale) {
       return false;
     }
     if (this._restartTimer && !stale) return false;
     if (this._resumeNeeded) return true;
     if (this.isCaptionStalled()) return true;
-    if (this._engineRunning) return false;
+    if (this._engineRunning) {
+      if (this._isIOS && stale && this._gotHypothesis) return true;
+      return false;
+    }
     return true;
   }
 
@@ -656,8 +684,9 @@ class Transcriber {
     }
     if (this._hold) return false;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    const staleMs = this._captionStaleThresholdMs();
     const msResult = this.msSinceResult();
-    const stale = msResult >= Transcriber.captionStaleMs;
+    const stale = msResult >= staleMs;
     if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs && !stale) {
       return false;
     }
@@ -668,7 +697,7 @@ class Transcriber {
       const interimMs = this._lastInterimAt
         ? Date.now() - this._lastInterimAt
         : msResult;
-      if (interimMs < Transcriber.captionStaleMs) return false;
+      if (interimMs < staleMs) return false;
     }
 
     const now = Date.now();
@@ -686,13 +715,30 @@ class Transcriber {
    */
   reviveLiveCaption() {
     if (!this.shouldRestart || !this.isListening) return false;
+    if (this._resumeNeeded) return false;
     if (!this.isCaptionStalled()) return false;
     if (this._lastReviveAt && Date.now() - this._lastReviveAt < 2500) return false;
+    if (this._stallReviveCount >= Transcriber.manualResumeAfterRevives) {
+      this._signalResumeNeeded();
+      return false;
+    }
     this._lastReviveAt = Date.now();
+    this._stallReviveCount++;
 
     if (!this._engineRunning) {
       this._clearRestartTimer();
       this._restartNow();
+      return true;
+    }
+
+    if (this._isIOS) {
+      this._clearRestartTimer();
+      this._commitPendingInterim();
+      this.interimTranscript = '';
+      this._lastInterimAt = 0;
+      this._lastInterimNorm = '';
+      this._restartNow();
+      if (this.onResult) this.onResult(this.finalTranscript, this.interimTranscript);
       return true;
     }
 
@@ -712,7 +758,7 @@ class Transcriber {
       return this._unwedgeJaSession();
     }
 
-    if (this._isIOS && !this._gotHypothesis) {
+    if (!this._gotHypothesis) {
       this._clearRestartTimer();
       this._restartNow();
       return true;
@@ -1273,6 +1319,16 @@ class Transcriber {
    * 仮説のあと結果が途切れたときの字幕停止。jaStaleStopMs と揃える。
    */
   static captionStaleMs = 4500;
+
+  /**
+   * iOS は発話ごとに onend があり、desktop より早く「止まった」ように見える。
+   */
+  static iosCaptionStaleMs = 3200;
+
+  /**
+   * この回数だけ自動付け直ししたあとは、タップ用の「再開」を出す。
+   */
+  static manualResumeAfterRevives = 2;
 
   /**
    * iOS だけ発話ごとに終わらせて onend で付け直す。
@@ -1880,6 +1936,10 @@ class Transcriber {
       if (rows.some((row) => row.norm.length > nextNorm.length && (
         row.norm.endsWith(nextNorm) || row.norm.startsWith(nextNorm)
       ))) return true;
+      if (committedNew.length >= nextNorm.length) {
+        if (committedNew.endsWith(nextNorm)) return true;
+        if (committedNew.startsWith(nextNorm)) return true;
+      }
     }
     return false;
   }
