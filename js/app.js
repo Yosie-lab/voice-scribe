@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v78';
+const APP_BUILD = 'v79';
 
 class VoiceScribeApp {
   constructor() {
@@ -172,12 +172,11 @@ class VoiceScribeApp {
       });
     }
 
+    const resumeTap = () => this._resumeReading();
     const resumeBtn = document.getElementById('resume-reading-btn');
-    if (resumeBtn) {
-      resumeBtn.addEventListener('click', () => {
-        this._resumeReading();
-      });
-    }
+    if (resumeBtn) resumeBtn.addEventListener('click', resumeTap);
+    const resumeHeaderBtn = document.getElementById('resume-reading-header-btn');
+    if (resumeHeaderBtn) resumeHeaderBtn.addEventListener('click', resumeTap);
     this.transcriber.onListeningChange = () => {
       this._syncResumeReading();
     };
@@ -1064,7 +1063,7 @@ class VoiceScribeApp {
       }
       const target = event.target;
       // クリアは次の click に任せる。このリスナはイベントを止めない。
-      if (target && target.closest && target.closest('#record-btn, #pause-btn, #clear-transcript-btn, #continue-recording-btn, #draft-play-btn, #resume-reading-btn')) return;
+      if (target && target.closest && target.closest('#record-btn, #pause-btn, #clear-transcript-btn, #continue-recording-btn, #draft-play-btn, #resume-reading-btn, #resume-reading-header-btn')) return;
       if (this.transcriber.isEngineRunning()) {
         document.removeEventListener('pointerdown', onPointer, true);
         this._recognitionGesture = null;
@@ -1180,15 +1179,20 @@ class VoiceScribeApp {
    */
   _syncResumeReading() {
     const btn = document.getElementById('resume-reading-btn');
-    if (!btn || !this.transcriber) return;
+    const headerBtn = document.getElementById('resume-reading-header-btn');
+    if (!this.transcriber) return;
+    const targets = [btn, headerBtn].filter(Boolean);
+    if (!targets.length) return;
     if (document.visibilityState === 'hidden') {
-      btn.style.display = 'none';
+      targets.forEach((el) => { el.style.display = 'none'; });
       return;
     }
+    const captureDown = !!(this.recorder && this.recorder.needsRecovery());
     const recognitionDown = this.transcriber.needsResume()
-      || this.transcriber.isCaptionStalled();
+      || this.transcriber.isCaptionStalled()
+      || captureDown;
     const show = !!(this.isRecording && !this._userPaused && recognitionDown);
-    btn.style.display = show ? 'inline-flex' : 'none';
+    targets.forEach((el) => { el.style.display = show ? 'inline-flex' : 'none'; });
   }
 
   /**
@@ -1563,7 +1567,7 @@ class VoiceScribeApp {
       '・<b>横画面</b>にする: コントロールセンター → 「画面の向きをロック」を OFF にしてから端末を横に。<br>',
       '・<b>ホーム画面</b>から起動している場合: アイコンを削除 → Safari で ',
       '<a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener">yosie-lab.github.io/voice-scribe</a>',
-      ' を開く → ⚙️ でビルド v78 を確認 → 共有 → ホーム画面に追加。',
+      ' を開く → ⚙️ でビルド v79 を確認 → 共有 → ホーム画面に追加。',
       '<br>今朝のアップデートで向きがおかしくなった場合も、上と同じ手順で古いホーム画面アイコンを消してください。'
     ].join('');
   }
@@ -2250,7 +2254,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=78');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=79');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();

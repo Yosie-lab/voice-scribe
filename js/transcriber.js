@@ -63,6 +63,8 @@ class Transcriber {
     this._startAckTimer = null;
     this._startAckGen = 0;
     this._lastReviveAt = 0;
+    this._lastInterimAt = 0;
+    this._lastInterimNorm = '';
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
@@ -246,7 +248,7 @@ class Transcriber {
         if (this.finalTranscript !== before) this._lastFromInterim = true;
       }
     }
-    this.interimTranscript = this._cleanLiveInterim(
+    const cleanedInterim = this._cleanLiveInterim(
       this.finalTranscript,
       Transcriber.stripEchoInterim(
         this.language,
@@ -254,6 +256,13 @@ class Transcriber {
         currentInterim
       )
     );
+    const prevInterimNorm = this._normalize(this.interimTranscript);
+    const nextInterimNorm = this._normalize(cleanedInterim);
+    this.interimTranscript = cleanedInterim;
+    if (nextInterimNorm !== prevInterimNorm) {
+      this._lastInterimAt = Date.now();
+      this._lastInterimNorm = nextInterimNorm;
+    }
     if (this._speechEndedAt && this._lastResultAt > this._speechEndedAt) {
       this._clearJaSpeechEndFlush();
     }
@@ -444,6 +453,8 @@ class Transcriber {
 
     this.finalTranscript = '';
     this.interimTranscript = '';
+    this._lastInterimAt = 0;
+    this._lastInterimNorm = '';
     this._lastChunk = '';
     this._lastChunkAt = 0;
     this._lastFromInterim = false;
@@ -622,10 +633,15 @@ class Transcriber {
       return false;
     }
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
-    if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs) return false;
-    if (this._restartTimer) return false;
+    const msResult = this.msSinceResult();
+    const stale = msResult >= Transcriber.captionStaleMs;
+    if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs && !stale) {
+      return false;
+    }
+    if (this._restartTimer && !stale) return false;
     if (this._resumeNeeded) return true;
-    if (this._engineRunning) return this.isCaptionStalled();
+    if (this.isCaptionStalled()) return true;
+    if (this._engineRunning) return false;
     return true;
   }
 
@@ -640,17 +656,28 @@ class Transcriber {
     }
     if (this._hold) return false;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
-    if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs) return false;
-    if (this._restartTimer) return false;
-    if ((this.interimTranscript || '').trim()) return false;
+    const msResult = this.msSinceResult();
+    const stale = msResult >= Transcriber.captionStaleMs;
+    if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs && !stale) {
+      return false;
+    }
+    if (this._restartTimer && !stale) return false;
+
+    const interim = (this.interimTranscript || '').trim();
+    if (interim) {
+      const interimMs = this._lastInterimAt
+        ? Date.now() - this._lastInterimAt
+        : msResult;
+      if (interimMs < Transcriber.captionStaleMs) return false;
+    }
 
     const now = Date.now();
-    const sinceEngine = this._sessionStartedAt ? now - this._sessionStartedAt : this.msSinceResult();
+    const sinceEngine = this._sessionStartedAt ? now - this._sessionStartedAt : msResult;
     if (!this._gotHypothesis) {
       const bootMs = this._isIOS ? Transcriber.iosCaptionBootMs : Transcriber.captionBootMs;
       return sinceEngine >= bootMs;
     }
-    return this.msSinceResult() >= Transcriber.captionStaleMs;
+    return stale;
   }
 
   /**

@@ -430,6 +430,13 @@ body::before {
   transition: var(--transition-fast);
 }
 
+.action-pill-btn.resume-reading-pill {
+  border-color: rgba(251, 191, 36, 0.9);
+  background: rgba(251, 191, 36, 0.18);
+  color: #fde68a;
+  font-weight: 700;
+}
+
 .action-pill-btn:active {
   background: var(--color-accent-primary);
   color: #080b14;
