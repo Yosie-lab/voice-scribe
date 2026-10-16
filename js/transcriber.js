@@ -68,6 +68,7 @@ class Transcriber {
     this._stallReviveCount = 0;
     this._lastCaptionChangeAt = 0;
     this._captionFingerprint = '';
+    this._userResumeUntil = 0;
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
@@ -600,6 +601,14 @@ class Transcriber {
   }
 
   /**
+   * ユーザが再開を押した直後は、自動 revive と競合しない。
+   * @returns {boolean}
+   */
+  inUserResumeGrace() {
+    return !!(this._userResumeUntil && Date.now() < this._userResumeUntil);
+  }
+
+  /**
    * ユーザタップで認識を付け直す。await より先に呼ぶ。ゾンビ engine も止めてから start する。
    * @param {boolean} [fromUserTap]
    * @returns {boolean}
@@ -623,10 +632,10 @@ class Transcriber {
     const hadText = !!((this.finalTranscript || '').trim() || (this.interimTranscript || '').trim());
 
     // iOS は stop()→onend 待ちでジェスチャが切れる。init() の abort だけで作り直し、同期で start を数回試す。
-    const attempts = fromUserTap ? 4 : 1;
+    if (fromUserTap) this._userResumeUntil = Date.now() + 12000;
+    const attempts = fromUserTap ? 6 : 1;
     for (let attempt = 0; attempt < attempts; attempt++) {
       this.init();
-      this._lastResultAt = Date.now();
       this._sessionStartedAt = Date.now();
       if (hadText) this._gotHypothesis = true;
       if (this._tryStartEngine('restart')) {
@@ -761,7 +770,7 @@ class Transcriber {
    */
   reviveLiveCaption() {
     if (!this.shouldRestart || !this.isListening) return false;
-    if (this._resumeNeeded) return false;
+    if (this._resumeNeeded || this.inUserResumeGrace()) return false;
     if (!this.isCaptionStalled()) return false;
     if (this._lastReviveAt && Date.now() - this._lastReviveAt < 2500) return false;
     if (this._stallReviveCount >= Transcriber.manualResumeAfterRevives) {
