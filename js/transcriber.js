@@ -1265,7 +1265,729 @@ class Transcriber {
     return true;
   }
 
-  // --- 確定・dedupe（static ポリシー / 日本語テキストは sibling モジュール） ---
+  // -------------------------------------------------------------------------
+  // 言語ポリシー。desktop ja の回復は stop()。speechend の abort は戻さない。
+  // -------------------------------------------------------------------------
+
+  /**
+   * desktop ja-JP のレベル監視。英語と iOS は v57 と同じしきい値。
+   * ja の低いしきい値とピークは、死んだ認識の gap だけに使う。
+   * 動いている ja はレベルでは abort しない。仮説のあと黙ったら stop() だけ。
+   * @param {string} language
+   * @param {boolean} ios
+   * @returns {{floor: number, abs: number, mult: number, gapMs: number, stallMs: number, resultMs: number, usePeak?: boolean, stallFloor?: number, stallAbs?: number, stallMult?: number}}
+   */
+  static speechWatchProfile(language, ios) {
+    if (language === 'ja-JP' && !ios) {
+      // gap の初期しきい値は max(0.007, 0.004*2) = 0.008。死んだ認識を 1 回のピークで付け直す。
+      // stall は max(0.018, 0.012*3.2)。部屋ノイズのピークでは切らない。
+      return {
+        floor: 0.004,
+        abs: 0.007,
+        mult: 2,
+        gapMs: 200,
+        stallMs: 2000,
+        resultMs: 2500,
+        usePeak: true,
+        stallFloor: 0.012,
+        stallAbs: 0.018,
+        stallMult: 3.2
+      };
+    }
+    return {
+      floor: 0.012,
+      abs: 0.018,
+      mult: 3.2,
+      gapMs: 600,
+      stallMs: 2000,
+      resultMs: 2500
+    };
+  }
+
+  /**
+   * @param {number} level
+   * @param {number} floor
+   * @param {{abs: number, mult: number}} profile
+   * @returns {boolean}
+   */
+  static isSpeechHot(level, floor, profile) {
+    return level > Math.max(profile.abs, floor * profile.mult);
+  }
+
+  /**
+   * ピークは死んだ認識の再起動だけに使う。動いている認識を切る判定は EMA と stall しきい値。
+   * stallAbs が無いプロファイル（英語・iOS）は gap と同じレベルを stall にも使う。
+   * @param {{abs: number, mult: number, usePeak?: boolean, stallAbs?: number, stallMult?: number}} profile
+   * @param {number|null} ema
+   * @param {number|null} peak
+   * @param {number} gapFloor
+   * @param {number} stallFloor
+   * @returns {{gap: boolean, stall: boolean}}
+   */
+  static speechHotFlags(profile, ema, peak, gapFloor, stallFloor) {
+    const usePeak = !!(profile && profile.usePeak && typeof peak === 'number' && !Number.isNaN(peak));
+    const gapLevel = usePeak ? peak : ema;
+    const gap = typeof gapLevel === 'number' && !Number.isNaN(gapLevel)
+      && Transcriber.isSpeechHot(gapLevel, gapFloor, profile);
+    const separateStall = !!(profile && profile.stallAbs != null);
+    const stallSpec = separateStall
+      ? { abs: profile.stallAbs, mult: profile.stallMult }
+      : profile;
+    const stallBase = separateStall ? stallFloor : gapFloor;
+    const stall = typeof ema === 'number' && !Number.isNaN(ema)
+      && Transcriber.isSpeechHot(ema, stallBase, stallSpec);
+    return { gap: !!gap, stall: !!stall };
+  }
+
+  /**
+   * 再起動までの待ち。desktop は言語で変えない。ja だけ短くすると仮説より先に init() する。
+   * iOS は v57 のまま。
+   * @param {'no-speech'|'stall'|'end'} kind
+   * @param {boolean} isIOS
+   * @param {string} [_language] 呼び出し互換。desktop の待ちは言語で変えない。
+   * @returns {number}
+   */
+  static restartDelay(kind, isIOS, _language) {
+    if (isIOS) {
+      if (kind === 'no-speech' || kind === 'stall') return 70;
+      return 90;
+    }
+    if (kind === 'no-speech') return 25;
+    if (kind === 'stall') return 30;
+    return 35;
+  }
+
+  /**
+   * speechend 後に仮説が無い ja desktop の再起動待ち。これより短いと onresult を落とす。
+   */
+  static jaResultGraceMs = 3000;
+
+  /**
+   * 仮説が一度出た desktop ja が、その後結果を足さないとき stop() するまでの待ち。
+   * jaResultGraceMs より長く、2.5 秒の stall abort と speechend 900ms の abort より遅い。
+   */
+  static jaStaleStopMs = 4500;
+
+  /**
+   * ライブ ja セッションを止めて結果を求めるまでの待ち。2.5 秒の abort は仮説より短い。
+   */
+  static jaLiveStopMs = 8000;
+
+  /**
+   * 同じ確定句を再送とみなす窓。
+   * desktop ja の stop()+restart は jaStaleStopMs（4.5s）や jaResultGraceMs（3s）だけ空く。
+   * 旧 2200ms では、再起動後に Chrome が同じ歌詞の final をもう一度出すと字幕が重複する。
+   */
+  static repeatWindowMs = 22000;
+
+  /**
+   * 日本語の確定・暫定をつなぐときに見る最大オーバーラップ（plain 文字）。
+   * 24 だと歌詞級の再送で境界が二重になり、字幕が読めなくなる。
+   */
+  static jaOverlapMax = 128;
+
+  /**
+   * これより短い自動再起動では「再開」を出さない。iOS の発話ごとの切れ目で点滅させない。
+   */
+  static resumeGapMs = 1200;
+
+  /**
+   * 回復の stop() のあと onend が来ないとき、認識だけ付け直すまでの待ち。
+   */
+  static stopWatchMs = 800;
+
+  /**
+   * start() から onstart まで待つ時間。これより早い gap nudge は初回認識を abort する。
+   */
+  static startAckMs = 1200;
+
+  /**
+   * onstart のあと一度も仮説が来ない desktop 向け。「再開」と自動復帰の目安。
+   */
+  static captionBootMs = 5000;
+
+  /**
+   * iOS は発話ごとに onend があり、最初の仮説まで時間がかかることがある。
+   */
+  static iosCaptionBootMs = 9000;
+
+  /**
+   * 仮説のあと結果が途切れたときの字幕停止。jaStaleStopMs と揃える。
+   */
+  static captionStaleMs = 4500;
+
+  /**
+   * iOS は発話ごとに onend があり、desktop より早く「止まった」ように見える。
+   */
+  static iosCaptionStaleMs = 3200;
+
+  /** iOS で「再開」を出し始めるまで（確定が動いていない時間） */
+  static iosResumeOfferMs = 1800;
+
+  /**
+   * この回数だけ自動付け直ししたあとは、タップ用の「再開」を出す。
+   */
+  static manualResumeAfterRevives = 2;
+
+  /**
+   * iOS だけ発話ごとに終わらせて onend で付け直す。
+   * desktop は ja も en も continuous。ja だけ false にすると単発認識になり、
+   * 暫定が話しているあいだ来ない（確定は発話終了か、仮説が無いときの stop で届く）。
+   * @param {string} _language 呼び出し互換。desktop の continuous は言語で分けない。
+   * @param {boolean} ios
+   * @returns {boolean}
+   */
+  static useContinuous(_language, ios) {
+    return !ios;
+  }
+
+  /**
+   * @param {string} language
+   * @param {boolean} ios
+   * @returns {boolean}
+   */
+  static useJaLiveWatch(language, ios) {
+    return language === 'ja-JP' && !ios;
+  }
+
+  /**
+   * desktop ja のライブセッションは abort しない。無応答が長いときだけ stop。
+   * @param {{language: string, ios: boolean, hasInterim: boolean, gotResult: boolean, msSinceStart: number}} state
+   * @returns {'none'|'stop'}
+   */
+  static jaLiveRecovery(state) {
+    if (!state || state.language !== 'ja-JP' || state.ios) return 'none';
+    if (state.hasInterim || state.gotResult) return 'none';
+    if (state.msSinceStart >= Transcriber.jaLiveStopMs) return 'stop';
+    return 'none';
+  }
+
+  /**
+   * 最初の仮説のあとに黙った desktop ja。stop は結果を求め、abort はしない。
+   * 仮説が無いあいだは none（8 秒の jaLiveRecovery が持つ）。
+   * 900ms / 2.5 秒では none。
+   * @param {{language: string, ios: boolean, gotResult: boolean, msSinceResult: number, msSinceSpeechEnd: number, resultAfterSpeechEnd: boolean}} state
+   * @returns {'none'|'stop'}
+   */
+  static jaStaleRecovery(state) {
+    if (!state || state.language !== 'ja-JP' || state.ios) return 'none';
+    if (!state.gotResult) return 'none';
+    const speechEndHung = state.msSinceSpeechEnd >= Transcriber.jaStaleStopMs
+      && !state.resultAfterSpeechEnd;
+    const stale = state.msSinceResult >= Transcriber.jaStaleStopMs;
+    if (speechEndHung || stale) return 'stop';
+    return 'none';
+  }
+
+  /**
+   * speechend 後、仮説がまだ無い ja desktop だけ再起動を遅らせる。
+   * @param {boolean} isIOS
+   * @param {string} language
+   * @param {'no-speech'|'stall'|'end'} kind
+   * @param {number} lastResultAt
+   * @param {number} speechEndedAt
+   * @returns {number}
+   */
+  static endRestartDelay(isIOS, language, kind, lastResultAt, speechEndedAt) {
+    const waiting = language === 'ja-JP'
+      && !isIOS
+      && (kind === 'end' || kind === 'no-speech')
+      && speechEndedAt > 0
+      && !(lastResultAt >= speechEndedAt);
+    if (waiting) return Transcriber.jaResultGraceMs;
+    return Transcriber.restartDelay(kind, isIOS, language);
+  }
+
+  /**
+   * 上位仮説が空、または尻切れのときだけ別案を採用する。文の書き換えはしない。
+   * 言語を渡さない、または英語のときは v57 と同じ規則。
+   * @param {SpeechRecognitionResult|Array<{transcript?: string, confidence?: number}>} result
+   * @param {string} [language]
+   * @returns {string}
+   */
+  static pickTranscript(result, language) {
+    if (language === 'ja-JP') return Transcriber._pickTranscriptJa(result);
+    return Transcriber._pickTranscriptEn(result);
+  }
+
+  /**
+   * confidence が全て 0 のブラウザ（Chrome に多い）では、順位を信用する。
+   * @param {SpeechRecognitionResult|Array<{transcript?: string, confidence?: number}>} result
+   * @returns {string}
+   */
+  static _pickTranscriptEn(result) {
+    if (!result || !result.length) return '';
+    const n = Math.min(result.length, 3);
+    let anyConfidence = false;
+    for (let i = 0; i < n; i++) {
+      const confidence = result[i] && typeof result[i].confidence === 'number' ? result[i].confidence : 0;
+      if (confidence > 0) anyConfidence = true;
+    }
+
+    if (anyConfidence) {
+      let bestText = (result[0] && result[0].transcript) || '';
+      let bestScore = -1;
+      for (let i = 0; i < n; i++) {
+        const alt = result[i];
+        if (!alt) continue;
+        const text = alt.transcript || '';
+        const trimmed = text.trim();
+        if (!trimmed) continue;
+        const score = alt.confidence + Math.min(trimmed.length, 40) * 0.0008;
+        if (score > bestScore) {
+          bestScore = score;
+          bestText = text;
+        }
+      }
+      return bestText;
+    }
+
+    const primary = (result[0] && result[0].transcript) || '';
+    const base = primary.trim();
+    if (!base) {
+      for (let i = 1; i < n; i++) {
+        const text = (result[i] && result[i].transcript) || '';
+        if (text.trim()) return text;
+      }
+      return primary;
+    }
+
+    for (let i = 1; i < n; i++) {
+      const text = (result[i] && result[i].transcript) || '';
+      const trimmed = text.trim();
+      if (!trimmed.startsWith(base)) continue;
+      const rawExtra = trimmed.slice(base.length);
+      const extra = rawExtra.trim();
+      // 空白や句読点を含む伸びは別文なので採用しない。尻切れの続きだけ足す。
+      if (extra && extra.length <= 12 && !/[\s。、！？!?]/.test(rawExtra)) return text;
+    }
+    return primary;
+  }
+
+  /**
+   * 日本語は信頼度 0 が多く、早口の続きが 12 字を超える。最長の尻だけ足す。
+   * 数字表記（3 / 三）の差では尻を捨てない。空白 1 つだけの区切りはモーラの続きとみなす。
+   * @param {SpeechRecognitionResult|Array<{transcript?: string, confidence?: number}>} result
+   * @returns {string}
+   */
+  static _pickTranscriptJa(result) {
+    if (!result || !result.length) return '';
+    const n = Math.min(result.length, 5);
+    let anyConfidence = false;
+    for (let i = 0; i < n; i++) {
+      const confidence = result[i] && typeof result[i].confidence === 'number' ? result[i].confidence : 0;
+      if (confidence > 0) anyConfidence = true;
+    }
+
+    if (anyConfidence) {
+      let bestText = (result[0] && result[0].transcript) || '';
+      let bestConf = 0;
+      let bestScore = -1;
+      const scoreN = Math.min(n, 3);
+      for (let i = 0; i < scoreN; i++) {
+        const alt = result[i];
+        if (!alt) continue;
+        const text = alt.transcript || '';
+        const trimmed = text.trim();
+        if (!trimmed) continue;
+        const confidence = typeof alt.confidence === 'number' ? alt.confidence : 0;
+        const score = confidence + Math.min(trimmed.length, 40) * 0.0008;
+        if (score > bestScore) {
+          bestScore = score;
+          bestText = text;
+          bestConf = confidence;
+        }
+      }
+      return Transcriber._extendJaTail(bestText, result, n, bestConf);
+    }
+
+    const primary = (result[0] && result[0].transcript) || '';
+    const base = primary.trim();
+    if (!base) {
+      for (let i = 1; i < n; i++) {
+        const text = (result[i] && result[i].transcript) || '';
+        if (text.trim()) return text;
+      }
+      return primary;
+    }
+    return Transcriber._extendJaTail(primary, result, n, 0);
+  }
+
+  /**
+   * 漢数字との対応。長さは変えない。
+   * @param {string} text
+   * @returns {string}
+   */
+  static _foldJaDigits(text) {
+    const digits = '〇一二三四五六七八九';
+    return (text || '')
+      .replace(/[0-9]/g, (ch) => digits[ch.charCodeAt(0) - 48])
+      .replace(/[０-９]/g, (ch) => digits[ch.charCodeAt(0) - 0xFF10]);
+  }
+
+  /**
+   * @param {string} primary
+   * @param {SpeechRecognitionResult|Array<{transcript?: string, confidence?: number}>} result
+   * @param {number} n
+   * @param {number} bestConf
+   * @returns {string}
+   */
+  static _extendJaTail(primary, result, n, bestConf) {
+    const base = (primary || '').trim();
+    if (!base) return primary || '';
+    const foldBase = Transcriber._foldJaDigits(base);
+    let best = primary;
+    let bestExtra = 0;
+    for (let i = 1; i < n; i++) {
+      const alt = result[i];
+      if (!alt) continue;
+      const confidence = typeof alt.confidence === 'number' ? alt.confidence : 0;
+      if (bestConf > 0 && confidence > 0 && confidence < bestConf - 0.12) continue;
+      const trimmed = (alt.transcript || '').trim();
+      if (!trimmed) continue;
+      const folded = Transcriber._foldJaDigits(trimmed);
+      if (!folded.startsWith(foldBase)) continue;
+      const rawExtra = trimmed.slice(foldBase.length);
+      const extra = rawExtra.trim();
+      if (!extra || extra.length > 24) continue;
+      if ((rawExtra.match(/[ \t\u3000]/g) || []).length > 1) continue;
+      if (!/^[ \t\u3000]*[^ \t\u3000。、！？!?]+$/.test(rawExtra)) continue;
+      if (extra.length <= bestExtra) continue;
+      bestExtra = extra.length;
+      const prefix = trimmed.slice(0, foldBase.length).replace(/[ \t\u3000]+$/g, '');
+      best = prefix + extra;
+    }
+    return best;
+  }
+
+  /**
+   * 確定チャンクの末尾と次チャンクの頭が同じとき、繰り返したモーラを一度だけ残す。
+   * @param {string} left
+   * @param {string} right
+   * @returns {string}
+   */
+  static mergeJapaneseOverlap(left, right) {
+    const a = (left || '').replace(/[。、！？!?\s\u3000]+$/g, '');
+    const b = (right || '').replace(/^[。、！？!?\s\u3000]+/, '');
+    if (!a || !b) return '';
+    const fa = Transcriber._foldJaDigits(a);
+    const fb = Transcriber._foldJaDigits(b);
+    if (fa === fb) return a;
+    const max = Math.min(fa.length, fb.length, Transcriber.jaOverlapMax);
+    for (let len = max; len >= 4; len--) {
+      if (fa.slice(-len) === fb.slice(0, len)) return a.slice(0, -len) + b;
+    }
+    // 全文が「えー」「えっと」だけのとき、次が同じ頭なら繰り返さず伸ばす。1文字は「あ」+「明日」になるので足さない。
+    if (fa.length >= 2 && fa.length < 4 && fb.startsWith(fa)) return b;
+    return '';
+  }
+
+  /**
+   * 日本語の暫定が確定にならず空になったとき、その暫定を残す。
+   * 認識器が返していない語は作らない。1文字の途中結果と、英語の暫定は残さない。
+   * @param {string} language
+   * @param {string} previousInterim
+   * @param {string} currentFinal
+   * @param {string} currentInterim
+   * @returns {string}
+   */
+  static salvageWipedInterim(language, previousInterim, currentFinal, currentInterim) {
+    if (language !== 'ja-JP') return '';
+    if ((currentFinal || '').trim()) return '';
+    if ((currentInterim || '').trim()) return '';
+    const pending = (previousInterim || '').trim();
+    if (pending.length < 2) return '';
+    return pending;
+  }
+
+  /**
+   * 日本語の暫定が、別発話の結果に置き換わって isFinal にならなかったとき、前の暫定を残す。
+   * 伸び・縮み、頭への補足、同じ区間の書き換え（今日 / きょう）は同じ仮説なので残さない。
+   * 暫定の方が長く尻が同じときは、フィラーを残すため暫定を返す。空への置き換えは salvage に任せる。
+   * @param {string} language
+   * @param {string} previousInterim
+   * @param {string} currentFinal
+   * @param {string} currentInterim
+   * @returns {string}
+   */
+  static keepSupersededInterim(language, previousInterim, currentFinal, currentInterim) {
+    if (language !== 'ja-JP') return '';
+    const pending = (previousInterim || '').trim();
+    if (pending.length < 2) return '';
+    const next = `${currentFinal || ''}${currentInterim || ''}`.trim();
+    if (!next) return '';
+    const foldPending = Transcriber._foldJaDigits(Transcriber._plain(pending));
+    const foldNext = Transcriber._foldJaDigits(Transcriber._plain(next));
+    if (!foldPending || !foldNext) return '';
+    if (foldNext.startsWith(foldPending) || foldPending.startsWith(foldNext)) return '';
+    if (foldNext.length > foldPending.length && foldNext.endsWith(foldPending)) return '';
+    if (foldPending.length > foldNext.length && foldPending.endsWith(foldNext)) return pending;
+    if (Transcriber._sameJaRewrite(foldPending, foldNext)) return '';
+    return pending;
+  }
+
+  /**
+   * 句読点と空白を除いた比較用文字列。
+   * @param {string} text
+   * @returns {string}
+   */
+  static _plain(text) {
+    return (text || '').replace(/[\s\u3000。、！？!?.,]+/g, '');
+  }
+
+  /**
+   * 連続する共通部分。今日 / きょう のように頭が違う同じ発話を、別文と分ける。
+   * @param {string} a
+   * @param {string} b
+   * @returns {number}
+   */
+  static _lcsLen(a, b) {
+    const n = a ? a.length : 0;
+    const m = b ? b.length : 0;
+    if (!n || !m) return 0;
+    let prev = new Array(m + 1).fill(0);
+    let best = 0;
+    for (let i = 1; i <= n; i++) {
+      const cur = new Array(m + 1).fill(0);
+      const ai = a[i - 1];
+      for (let j = 1; j <= m; j++) {
+        if (ai === b[j - 1]) {
+          cur[j] = prev[j - 1] + 1;
+          if (cur[j] > best) best = cur[j];
+        }
+      }
+      prev = cur;
+    }
+    return best;
+  }
+
+  /**
+   * @param {string} foldPending
+   * @param {string} foldNext
+   * @returns {boolean}
+   */
+  static _sameJaRewrite(foldPending, foldNext) {
+    const shorter = Math.min(foldPending.length, foldNext.length);
+    if (shorter < 4) return false;
+    const shared = Transcriber._lcsLen(foldPending, foldNext);
+    return shared >= 4 && shared >= shorter * 0.65;
+  }
+
+  /**
+   * 確定の尻を繰り返す暫定は、画面にも次の確定にも残さない。
+   * 英語は暫定が確定と完全に同じときだけ外す。
+   * @param {string} language
+   * @param {string} finalText
+   * @param {string} interim
+   * @returns {string}
+   */
+  static stripEchoInterim(language, finalText, interim) {
+    const raw = interim || '';
+    const pending = raw.trim();
+    if (!pending) return '';
+    const committed = (finalText || '').trim();
+    if (!committed) return raw;
+
+    if (language !== 'ja-JP') {
+      const c = committed.replace(/\s+/g, ' ').trim();
+      const i = pending.replace(/\s+/g, ' ').trim();
+      if (c === i) return '';
+      return raw;
+    }
+
+    const foldC = Transcriber._foldJaDigits(Transcriber._plain(committed));
+    const foldI = Transcriber._foldJaDigits(Transcriber._plain(pending));
+    if (!foldI) return '';
+    if (foldC.endsWith(foldI)) return '';
+    if (foldI.startsWith(foldC)) return Transcriber._slicePlain(pending, foldC.length);
+    const max = Math.min(foldC.length, foldI.length, Transcriber.jaOverlapMax);
+    for (let len = max; len >= 4; len--) {
+      if (foldC.slice(-len) === foldI.slice(0, len)) return Transcriber._slicePlain(pending, len);
+    }
+    return raw;
+  }
+
+  /**
+   * 確定末尾に同じ塊が二重になったとき、外側の繰り返しだけ取る（接頭辞は触らない）。
+   * @param {string} text
+   * @param {string} [anchorRaw]
+   * @returns {string}
+   */
+  static collapseAdjacentJaRepeats(text, anchorRaw) {
+    const raw = (text || '').trim();
+    if (!raw) return '';
+    const anchor = (anchorRaw || '').trim();
+    const head = anchor && raw.startsWith(anchor) ? anchor : '';
+    let tail = head ? raw.slice(head.length) : raw;
+    if (!tail) return raw;
+    let norm = Transcriber._foldJaDigits(Transcriber._plain(tail));
+    let changed = true;
+    while (changed && norm.length >= 16) {
+      changed = false;
+      const cap = Math.min(Math.floor(norm.length / 2), Transcriber.jaOverlapMax);
+      for (let unit = cap; unit >= 8; unit--) {
+        if (norm.slice(-unit) !== norm.slice(-2 * unit, -unit)) continue;
+        tail = Transcriber._trimLastPlain(tail, unit);
+        norm = Transcriber._foldJaDigits(Transcriber._plain(tail));
+        changed = true;
+        break;
+      }
+    }
+    return head + tail;
+  }
+
+  /**
+   * 長い確定がほぼ半分ずつ重複（Hermes デモのような塊の再送）を1つに畳む。
+   * @param {string} text
+   * @param {string} [anchorRaw]
+   * @returns {string}
+   */
+  static collapseJaNearHalfDuplicate(text, anchorRaw) {
+    const raw = (text || '').trim();
+    if (!raw) return '';
+    const anchor = (anchorRaw || '').trim();
+    const head = anchor && raw.startsWith(anchor) ? anchor : '';
+    let tail = head ? raw.slice(head.length) : raw;
+    let norm = Transcriber._foldJaDigits(Transcriber._plain(tail));
+    if (norm.length < 40) return raw;
+    let changed = true;
+    while (changed && norm.length >= 40) {
+      changed = false;
+      const half = Math.floor(norm.length / 2);
+      const a = norm.slice(0, half);
+      const b = norm.slice(half);
+      const shared = Transcriber._lcsLen(a, b);
+      if (shared >= half * 0.72) {
+        tail = Transcriber._headPlain(tail, half);
+        norm = Transcriber._foldJaDigits(Transcriber._plain(tail));
+        changed = true;
+      }
+    }
+    return head + tail;
+  }
+
+  /**
+   * @param {string} text
+   * @param {string} [anchorRaw]
+   * @returns {string}
+   */
+  static polishJaCommitted(text, anchorRaw) {
+    let out = (text || '').trim();
+    if (!out) return '';
+    out = Transcriber.collapseRepeatedPhrase(out, 'ja-JP');
+    out = Transcriber.collapseJaNearHalfDuplicate(out, anchorRaw);
+    out = Transcriber.collapseAdjacentJaRepeats(out, anchorRaw);
+    out = Transcriber.collapseJaNearHalfDuplicate(out, anchorRaw);
+    return out;
+  }
+
+  /**
+   * @param {string} raw
+   * @param {number} plainLen
+   * @returns {string}
+   */
+  static _trimLastPlain(raw, plainLen) {
+    const trimmed = (raw || '').trim();
+    if (!plainLen) return trimmed;
+    let counted = 0;
+    let i = trimmed.length;
+    while (i > 0 && counted < plainLen) {
+      i -= 1;
+      if (!/[\s\u3000。、！？!?.,]/.test(trimmed[i])) counted += 1;
+    }
+    return trimmed.slice(0, i).replace(/[\s\u3000。、！？!?.,]+$/g, '');
+  }
+
+  /**
+   * 句読点を数えずに plainLen 文字進めて、残りを返す。
+   * @param {string} raw
+   * @param {number} plainLen
+   * @returns {string}
+   */
+  static _slicePlain(raw, plainLen) {
+    const trimmed = (raw || '').trim();
+    let counted = 0;
+    let i = 0;
+    while (i < trimmed.length && counted < plainLen) {
+      if (!/[\s\u3000。、！？!?.,]/.test(trimmed[i])) counted += 1;
+      i += 1;
+    }
+    return trimmed.slice(i).replace(/^[\s\u3000。、！？!?.,]+/, '');
+  }
+
+  /**
+   * 英語の um / uh だけ外す。日本語のえー / えっと / あのーは残す。
+   * @param {string} text
+   * @param {string} language
+   * @returns {string}
+   */
+  static stripFillers(text, language) {
+    if (!text) return '';
+    if (language === 'ja-JP') {
+      // えー / えっと / あのー は字幕に残す。空白だけ整える。英語の um / uh はこれまで通り外す。
+      return text
+        .replace(/^[、,\s]+/, '')
+        .replace(/[ \t\u3000]{2,}/g, ' ');
+    }
+    return text
+      .replace(/\b(?:um+|uh+)\b[,.]?/gi, '')
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/\s+([,.!?])/g, '$1');
+  }
+
+  // -------------------------------------------------------------------------
+  // 結果の確定。フィラーは残す。空になった暫定は残す。重なったモーラは一度だけ。
+  // 同じ句の再送は repeatWindowMs のあいだ足さない。再起動で resultIndex は 0 に戻る。
+  // -------------------------------------------------------------------------
+
+  /**
+   * 句読点を除いて先頭 plainLen 文字を返す。
+   * @param {string} raw
+   * @param {number} plainLen
+   * @returns {string}
+   */
+  static _headPlain(raw, plainLen) {
+    const trimmed = (raw || '').trim();
+    let counted = 0;
+    let i = 0;
+    while (i < trimmed.length && counted < plainLen) {
+      if (!/[\s\u3000。、！？!?.,]/.test(trimmed[i])) counted += 1;
+      i += 1;
+    }
+    return trimmed.slice(0, i).replace(/[\s\u3000。、！？!?.,]+$/g, '');
+  }
+
+  /**
+   * Chrome が歌で同じ句を1つの final に二度入れることがある。全文が同じ単位の繰り返しなら一度にする。
+   * 4文字未満の単位（あ、はい）は吃音なので畳まない。
+   * @param {string} text
+   * @param {string} language
+   * @returns {string}
+   */
+  static collapseRepeatedPhrase(text, language) {
+    if (language !== 'ja-JP') return text || '';
+    const raw = (text || '').trim();
+    if (!raw) return '';
+    const norm = Transcriber._foldJaDigits(Transcriber._plain(raw));
+    if (norm.length < 8) return raw;
+    const maxUnit = Math.min(320, Math.floor(norm.length / 2));
+    for (let unit = maxUnit; unit >= 4; unit--) {
+      if (norm.length % unit !== 0) continue;
+      const times = norm.length / unit;
+      if (times < 2 || times > 12) continue;
+      const piece = norm.slice(0, unit);
+      let same = true;
+      for (let t = 1; t < times; t++) {
+        if (norm.slice(t * unit, (t + 1) * unit) !== piece) {
+          same = false;
+          break;
+        }
+      }
+      if (!same) continue;
+      return Transcriber._headPlain(raw, unit) || raw;
+    }
+    return raw;
+  }
 
   /**
    * @param {number} now
@@ -1575,12 +2297,8 @@ class Transcriber {
   }
 }
 
-if (typeof TranscriberPolicy !== 'undefined') Object.assign(Transcriber, TranscriberPolicy);
-if (typeof TranscriberJaText !== 'undefined') Object.assign(Transcriber, TranscriberJaText);
-
-if (typeof window !== 'undefined') window.Transcriber = Transcriber;
-if (typeof module !== 'undefined') {
-  Object.assign(Transcriber, require('./transcriber-policy.js'));
-  Object.assign(Transcriber, require('./transcriber-ja-text.js'));
+// グローバルエクスポート
+window.Transcriber = Transcriber;
+if (typeof module !== 'undefined' && module.exports) {
   module.exports = Transcriber;
 }

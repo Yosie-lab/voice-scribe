@@ -1,16 +1,13 @@
 // VoiceScribe Service Worker
 // Network-First戦略で常に最新アセットを配信
 
-const CACHE_NAME = 'voicescribe-v85';
+const CACHE_NAME = 'voicescribe-v84';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
   './css/style.css',
   './js/app.js',
-  './js/app-recording-health.js',
   './js/recorder.js',
-  './js/transcriber-policy.js',
-  './js/transcriber-ja-text.js',
   './js/transcriber.js',
   './js/whisper.js',
   './js/storage.js',
