@@ -55,6 +55,8 @@ class Transcriber {
     this._resumeNeeded = false;
     this._restartDelayMs = 0;
     this._recentNorms = [];
+    /** @type {string} 続き録音の接頭辞。dedupe はこのあとに足した分だけ見る。 */
+    this._dedupeAnchorNorm = '';
     this._pendingStartAt = 0;
     this._startAckTimer = null;
     this._startAckGen = 0;
@@ -451,6 +453,7 @@ class Transcriber {
     this._stopWatchPending = false;
     this._pendingStartAt = 0;
     this._recentNorms = [];
+    this._dedupeAnchorNorm = '';
     this.retryCount = 0;
     this._contentionRestarts = 0;
     this._clearRestartTimer();
@@ -462,6 +465,17 @@ class Transcriber {
     this.isListening = true;
 
     return this._tryStartEngine('session');
+  }
+
+  /**
+   * 続き録音の接頭辞。start() のあとに呼ぶ。接頭辞は dedupe の対象外にする。
+   * @param {string} prefix
+   */
+  setContinuedPrefix(prefix) {
+    const text = prefix || '';
+    this.finalTranscript = text;
+    this.interimTranscript = '';
+    this._dedupeAnchorNorm = this._normalize(text);
   }
 
   /**
@@ -622,7 +636,8 @@ class Transcriber {
     const now = Date.now();
     const sinceEngine = this._sessionStartedAt ? now - this._sessionStartedAt : this.msSinceResult();
     if (!this._gotHypothesis) {
-      return sinceEngine >= Transcriber.captionBootMs;
+      const bootMs = this._isIOS ? Transcriber.iosCaptionBootMs : Transcriber.captionBootMs;
+      return sinceEngine >= bootMs;
     }
     return this.msSinceResult() >= Transcriber.captionStaleMs;
   }
@@ -657,6 +672,12 @@ class Transcriber {
         return true;
       }
       return this._unwedgeJaSession();
+    }
+
+    if (this._isIOS && !this._gotHypothesis) {
+      this._clearRestartTimer();
+      this._restartNow();
+      return true;
     }
 
     return this.nudge('stall');
@@ -1200,6 +1221,11 @@ class Transcriber {
   static captionBootMs = 5000;
 
   /**
+   * iOS は発話ごとに onend があり、最初の仮説まで時間がかかることがある。
+   */
+  static iosCaptionBootMs = 9000;
+
+  /**
    * 仮説のあと結果が途切れたときの字幕停止。jaStaleStopMs と揃える。
    */
   static captionStaleMs = 4500;
@@ -1678,6 +1704,20 @@ class Transcriber {
    * @returns {{norm: string, at: number}[]}
    * @private
    */
+  /**
+   * この録音セッションで足した確定だけ（続き録音の接頭辞は除く）。
+   * @returns {string}
+   * @private
+   */
+  _committedNewNorm() {
+    const full = this._normalize(this.finalTranscript);
+    const anchor = this._dedupeAnchorNorm || '';
+    if (!anchor) return full;
+    if (!full || full.length <= anchor.length) return '';
+    if (full.startsWith(anchor)) return full.slice(anchor.length);
+    return full;
+  }
+
   _recentRows(now) {
     const windowMs = Transcriber.repeatWindowMs;
     const kept = (this._recentNorms || []).filter((row) => row && row.norm && now - row.at < windowMs);
@@ -1726,17 +1766,14 @@ class Transcriber {
   _isRepeatedCommit(nextNorm, now) {
     if (!nextNorm) return false;
     const rows = this._recentRows(now);
-    const committed = this._normalize(this.finalTranscript);
-    if (nextNorm.length >= 8 && committed && committed === nextNorm) return true;
-    if (nextNorm.length >= 4 && committed && committed.endsWith(nextNorm)) {
-      if (nextNorm.length >= 8) return true;
-      if (now - (this._lastChunkAt || 0) < 450) return true;
+    const committedNew = this._committedNewNorm();
+    const sinceChunk = now - (this._lastChunkAt || 0);
+    if (nextNorm.length >= 8 && committedNew && committedNew === nextNorm) {
+      return sinceChunk < Transcriber.repeatWindowMs;
     }
-    if (nextNorm.length >= 8 && committed && committed.includes(nextNorm) && rows.length) {
-      for (const row of rows) {
-        if (row.norm === nextNorm) return true;
-        if (row.norm.includes(nextNorm)) return true;
-      }
+    if (nextNorm.length >= 4 && committedNew && committedNew.endsWith(nextNorm)) {
+      if (nextNorm.length >= 8 && sinceChunk < Transcriber.repeatWindowMs) return true;
+      if (sinceChunk < 450) return true;
     }
     if (!rows.length) return false;
     const latest = rows[rows.length - 1];
@@ -1744,10 +1781,13 @@ class Transcriber {
       if (nextNorm.length >= 2) return true;
       return now - latest.at < 450;
     }
+    if (this._dedupeAnchorNorm && nextNorm.length >= 8 && nextNorm === this._dedupeAnchorNorm && rows.length) {
+      return true;
+    }
     if (nextNorm.length < 4) return false;
     if (rows.some((row) => row.norm === nextNorm)) return true;
     if (nextNorm.length >= 8) {
-      return rows.some((row) => row.norm.includes(nextNorm));
+      return rows.some((row) => row.norm.length > nextNorm.length && row.norm.includes(nextNorm));
     }
     return false;
   }
@@ -1824,7 +1864,7 @@ class Transcriber {
     }
 
     // 長い確定の尻だけが final で戻ってくる（3 と 三を含む）。言い直しは窓のあと。
-    const committedNorm = this._normalize(this.finalTranscript);
+    const committedNorm = this._committedNewNorm();
     if (
       this.language === 'ja-JP' &&
       nextNorm.length >= 4 &&
