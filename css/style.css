@@ -73,6 +73,9 @@
   /* Safe Area */
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+
+  /* iOS Safari: 100dvh が回転後に更新されないことがある */
+  --app-height: 100dvh;
 }
 
 /* ============================================
@@ -96,7 +99,7 @@ body {
   font-family: var(--font-primary);
   background: var(--color-bg-primary);
   color: var(--color-text-primary);
-  min-height: 100dvh;
+  min-height: var(--app-height, 100dvh);
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -123,8 +126,8 @@ body::before {
 #app {
   position: relative;
   z-index: 1;
-  height: 100dvh;
-  max-height: 100dvh;
+  height: var(--app-height, 100dvh);
+  max-height: var(--app-height, 100dvh);
   display: flex;
   flex-direction: column;
   overflow: hidden;
