@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v83';
+const APP_BUILD = 'v84';
 
 class VoiceScribeApp {
   constructor() {
@@ -57,6 +57,7 @@ class VoiceScribeApp {
     this._draftPlayToken = 0;
     this._speechWatch = null;
     this._captionWatch = null;
+    this._resumeBoostTimer = null;
     this._speechProfile = null;
     this._speechFloor = 0.012;
     this._speechHotMs = 0;
@@ -1156,23 +1157,42 @@ class VoiceScribeApp {
   async _resumeReading() {
     if (!this.isRecording || this._userPaused || this._stopPromise) return;
     const ios = this.transcriber.startBeforeRecorder;
+    const captureDown = this.recorder.needsRecovery();
 
-    // iOS はジェスチャ同期のうちに必ず付け直す（engineRunning のゾンビでも）。
+    // iOS: マイク復旧より先に認識を付ける（await 前）。録音経路の復旧は後ろで非同期。
     const kicked = this.transcriber.manualResumeListening(true);
     this._recoverAttempts = 0;
     this._startCaptionWatch();
     this._startSpeechWatch();
+    this._armResumeBoost();
     this._syncResumeReading();
     if (!kicked) {
       this.ui.showToast('再開できませんでした。もう一度「再開」をタップしてください', 'error', 3500);
     } else {
-      setTimeout(() => {
-        this.ui.showToast('🎙️ 文字起こしを再開しました。話してください', 'success', 2500);
-      }, 0);
+      this.ui.showToast('🎙️ 聞き取りを開始しました。話してください', 'success', 2500);
+    }
+
+    if (captureDown && ios) {
+      this.recorder.ensureCapture().then((stream) => {
+        if (!this.isRecording || this._userPaused) return;
+        if (this.visualizer && stream) {
+          this.visualizer.stopIdleAnimation();
+          this.visualizer.connectStream(stream);
+        }
+        if (!this.transcriber.isEngineRunning()) {
+          this.transcriber.manualResumeListening(false);
+        }
+        this._syncResumeReading();
+      }).catch((error) => {
+        console.warn('読み取り再開でマイクを戻せませんでした:', error);
+        this.ui.showToast('マイクの復旧に失敗しました。もう一度「再開」をタップしてください', 'error', 4000);
+        this.transcriber._signalResumeNeeded();
+        this._syncResumeReading();
+      });
+      return;
     }
 
     let stream = this.recorder.stream;
-    const captureDown = this.recorder.needsRecovery();
     if (captureDown) {
       try {
         stream = await this.recorder.ensureCapture();
@@ -1190,10 +1210,31 @@ class VoiceScribeApp {
       await this.visualizer.connectStream(stream);
     }
 
-    if (!ios && (captureDown || !this.transcriber.isEngineRunning())) {
-      this.transcriber.manualResumeListening(true);
+    if (!this.transcriber.isEngineRunning()) {
+      this.transcriber.manualResumeListening(ios);
     }
     this._syncResumeReading();
+  }
+
+  /**
+   * 再開タップ後しばらく、認識が落ちたら自動で付け直す（iOS の遅れ対策）。
+   * @private
+   */
+  _armResumeBoost() {
+    if (this._resumeBoostTimer) clearInterval(this._resumeBoostTimer);
+    let ticks = 0;
+    this._resumeBoostTimer = setInterval(() => {
+      ticks++;
+      if (!this.isRecording || this._userPaused || ticks > 20) {
+        clearInterval(this._resumeBoostTimer);
+        this._resumeBoostTimer = null;
+        return;
+      }
+      if (!this.transcriber.inUserResumeGrace()) return;
+      if (this.transcriber.isEngineRunning()) return;
+      this.transcriber.manualResumeListening(false);
+      this._syncResumeReading();
+    }, 400);
   }
 
   /**
@@ -1246,6 +1287,7 @@ class VoiceScribeApp {
     }
     this._syncResumeReading();
     if (this.transcriber._resumeNeeded) return;
+    if (this.transcriber.inUserResumeGrace()) return;
     if (this.transcriber.isCaptionStalled()) {
       this.transcriber.reviveLiveCaption();
       this._syncResumeReading();
@@ -1593,7 +1635,7 @@ class VoiceScribeApp {
       '・<b>横画面</b>にする: コントロールセンター → 「画面の向きをロック」を OFF にしてから端末を横に。<br>',
       '・<b>ホーム画面</b>から起動している場合: アイコンを削除 → Safari で ',
       '<a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener">yosie-lab.github.io/voice-scribe</a>',
-      ' を開く → ⚙️ でビルド v83 を確認 → 共有 → ホーム画面に追加。',
+      ' を開く → ⚙️ でビルド v84 を確認 → 共有 → ホーム画面に追加。',
       '<br>今朝のアップデートで向きがおかしくなった場合も、上と同じ手順で古いホーム画面アイコンを消してください。'
     ].join('');
   }
@@ -2280,7 +2322,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=83');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=84');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();
