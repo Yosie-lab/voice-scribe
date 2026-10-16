@@ -598,11 +598,11 @@ assert(viz.includes('getSpeechPeak'), 'frame peak for short bursts');
 assert(viz.includes('_sampleSpeechPeak'), 'peak is sampled while drawing');
 assert(app.includes('usePeak'), 'desktop ja watch reads the peak');
 assert(app.includes('speechHotFlags'), 'stall does not reuse the gap peak');
+assert(!index.includes('v=74'), 'index cache bust left 74');
 assert(!index.includes('v=73'), 'index cache bust left 73');
-assert(!index.includes('v=72'), 'index cache bust left 72');
-assert(index.includes('v=74'), 'index is v74');
-assert(sw.includes("voicescribe-v74"), 'sw cache name');
-assert(!sw.includes('voicescribe-v73'), 'old sw name gone');
+assert(index.includes('v=75'), 'index is v75');
+assert(sw.includes("voicescribe-v75"), 'sw cache name');
+assert(!sw.includes('voicescribe-v74'), 'old sw name gone');
 const manifest = fs.readFileSync(path.join(root, 'manifest.json'), 'utf8');
 assert(!manifest.includes('portrait-primary'), 'PWA does not lock portrait-primary');
 assert(!manifest.includes('"orientation"'), 'manifest does not declare orientation lock');
@@ -610,9 +610,10 @@ assert(manifest.includes('"id": "./"'), 'manifest id stays stable for iOS home s
 assert(!app.includes('navigator.wakeLock.request'), 'wake lock does not block device lock');
 assert(!app.includes('screen.orientation.unlock'), 'no orientation unlock calls on iOS');
 assert(app.includes('_syncViewportHeight'), 'viewport resync on rotate for iOS Safari');
-assert(app.includes("APP_BUILD = 'v74'"), 'app build tag is v74');
+assert(app.includes("APP_BUILD = 'v75'"), 'app build tag is v75');
 assert(app.includes('app-ios-rotation-hint'), 'settings explain iPhone rotation limits');
-assert(app.includes('sw.js?v=74'), 'service worker registration is cache-busted');
+assert(app.includes('sw.js?v=75'), 'service worker registration is cache-busted');
+assert(transcriberSrc.includes('_cleanLiveInterim'), 'interim repeat uses the commit dedupe window');
 assert(css.includes('--app-height'), 'css uses dynamic viewport height');
 assert(!sw.includes('voicescribe-v65'), 'older sw name gone');
 const micCalls = (src) => (src.match(/\.getUserMedia\s*\(/g) || []).length;
@@ -916,6 +917,26 @@ replay._recentNorms.forEach((row) => {
 replay._lastChunkAt = Date.now() - (Transcriber.repeatWindowMs + 500);
 replay._appendFinal(LINE);
 assert(countSpan(replay.finalTranscript, LINE) === 2, 'the same lyric after the window is a real reprise');
+
+const subsetReplay = new Transcriber();
+subsetReplay.language = 'ja-JP';
+subsetReplay._appendFinal(`${LINE}川を越えて行く`);
+subsetReplay._appendFinal(LINE);
+assert(countSpan(subsetReplay.finalTranscript, LINE) === 1, 'a lyric resent inside a longer commit is dropped');
+
+const iosLoop = new Transcriber();
+iosLoop.language = 'ja-JP';
+iosLoop._isIOS = true;
+assert(iosLoop.start() === true, 'ios loop session starts');
+iosLoop.recognition.onresult({ resultIndex: 0, results: [hypothesis(LINE, true)] });
+iosLoop._restartNow();
+iosLoop.recognition.onresult({ resultIndex: 0, results: [hypothesis(LINE, false)] });
+assert(iosLoop.interimTranscript === '', 'ios loop interim for a recent lyric is hidden');
+iosLoop.recognition.onresult({ resultIndex: 0, results: [hypothesis(LINE, true)] });
+assert(countSpan(iosLoop.finalTranscript, LINE) === 1, 'ios loop final for a recent lyric is dropped');
+iosLoop.stop();
+
+assert(Transcriber.mergeJapaneseOverlap(LINE, LINE) === LINE, 'joining identical ja chunks does not duplicate');
 
 const tailResend = new Transcriber();
 tailResend.language = 'ja-JP';
