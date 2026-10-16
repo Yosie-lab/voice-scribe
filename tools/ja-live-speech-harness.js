@@ -443,9 +443,11 @@ FakeRecognition.prototype.start = function() {
 };
 FakeRecognition.prototype.stop = function() {
   this.stopped = true;
+  if (typeof this.onend === 'function') this.onend();
 };
 FakeRecognition.prototype.abort = function() {
   this.aborted = true;
+  if (typeof this.onend === 'function') this.onend();
 };
 
 function hypothesis(text, isFinal) {
@@ -595,11 +597,11 @@ assert(viz.includes('getSpeechPeak'), 'frame peak for short bursts');
 assert(viz.includes('_sampleSpeechPeak'), 'peak is sampled while drawing');
 assert(app.includes('usePeak'), 'desktop ja watch reads the peak');
 assert(app.includes('speechHotFlags'), 'stall does not reuse the gap peak');
+assert(!index.includes('v=68'), 'index cache bust left 68');
 assert(!index.includes('v=67'), 'index cache bust left 67');
-assert(!index.includes('v=66'), 'index cache bust left 66');
-assert(index.includes('v=68'), 'index is v68');
-assert(sw.includes("voicescribe-v68"), 'sw cache name');
-assert(!sw.includes('voicescribe-v67'), 'old sw name gone');
+assert(index.includes('v=69'), 'index is v69');
+assert(sw.includes("voicescribe-v69"), 'sw cache name');
+assert(!sw.includes('voicescribe-v68'), 'old sw name gone');
 assert(!sw.includes('voicescribe-v65'), 'older sw name gone');
 const micCalls = (src) => (src.match(/\.getUserMedia\s*\(/g) || []).length;
 const recorderSrc = fs.readFileSync(path.join(root, 'js/recorder.js'), 'utf8');
@@ -641,6 +643,9 @@ assert(ingest && !ingest.includes('.abort(') && !ingest.includes('.stop('), 'res
 assert(transcriberSrc.includes('_isDesktopJa()'), 'desktop ja policy is one helper');
 assert(transcriberSrc.includes('startAckMs'), 'start ack prevents early gap nudge');
 assert(transcriberSrc.includes('_tryStartEngine'), 'recognition start waits for onstart');
+assert(transcriberSrc.includes('isCaptionStalled'), 'zombie caption detection exists');
+assert(transcriberSrc.includes('reviveLiveCaption'), 'caption can recover without stopping recorder');
+assert(app.includes('_checkCaptionHealth'), 'caption health runs without the level meter');
 
 const UIManager = require('../js/ui.js');
 assert(UIManager.transcriptChrome(4, true).showClear === true, 'clear stays visible while recording');
@@ -935,7 +940,9 @@ const resumeUi = new Transcriber();
 resumeUi.language = 'ja-JP';
 resumeUi._isIOS = false;
 assert(resumeUi.start() === true, 'resume visibility session starts');
-assert(resumeUi.needsResume() === false, 'running recognition hides 再開');
+assert(resumeUi.needsResume() === false, 'running recognition with fresh captions hides 再開');
+resumeUi._sessionStartedAt = Date.now() - (Transcriber.captionBootMs + 500);
+assert(resumeUi.needsResume() === true, 'running engine with no hypothesis shows 再開');
 resumeUi._engineRunning = false;
 resumeUi._restartTimer = setTimeout(() => {}, 60000);
 resumeUi._restartDelayMs = 35;
@@ -947,6 +954,9 @@ resumeUi._restartTimer = null;
 resumeUi._restartDelayMs = 0;
 assert(resumeUi.needsResume() === true, 'a dead engine with no timer shows 再開');
 resumeUi._engineRunning = true;
+resumeUi._sessionStartedAt = Date.now();
+resumeUi._lastResultAt = Date.now();
+resumeUi._gotHypothesis = true;
 assert(resumeUi.needsResume() === false, 'recognition running again hides 再開');
 resumeUi.stop();
 assert(resumeUi.needsResume() === false, 'user stop hides 再開');
@@ -1012,7 +1022,7 @@ async function proveSpeechEndFlush() {
     wedged.recognition.onresult({ resultIndex: 0, results: [hypothesis('今日はいい天気ですね', false)] });
     wedged.recognition.onspeechend();
     assert(wedged.recognition.stopped === false, 'speechend does not stop inside the old 900ms window');
-    await wait(100);
+    await wait(150);
     assert(wedged.recognition.stopped === true, 'speechend with no later hypothesis stop()s');
     assert(wedged.recognition.aborted === false, 'speechend flush does not abort');
     assert(seen.some((row) => row.finalText.includes('今日はいい天気ですね')), 'the crumb is kept before the flush');

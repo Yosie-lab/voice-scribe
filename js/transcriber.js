@@ -58,6 +58,7 @@ class Transcriber {
     this._pendingStartAt = 0;
     this._startAckTimer = null;
     this._startAckGen = 0;
+    this._lastReviveAt = 0;
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
@@ -432,7 +433,7 @@ class Transcriber {
     this._lastChunk = '';
     this._lastChunkAt = 0;
     this._lastFromInterim = false;
-    this._lastResultAt = Date.now();
+    this._lastResultAt = 0;
     this._heardSpeechAt = 0;
     this._lastNudgeAt = 0;
     this._intentionalAbort = false;
@@ -586,11 +587,66 @@ class Transcriber {
     if (!this.shouldRestart || !this.isListening) return false;
     if (this._hold) return false;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
-    if (this._engineRunning) return false;
     if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs) return false;
     if (this._restartTimer) return false;
     if (this._resumeNeeded) return true;
+    if (this._engineRunning) return this.isCaptionStalled();
     return true;
+  }
+
+  /**
+   * 録音中なのに字幕が止まっている。onstart だけ来て onresult が無い Chrome のゾンビも含む。
+   * @returns {boolean}
+   */
+  isCaptionStalled() {
+    if (!this.shouldRestart || !this.isListening) return false;
+    if (this._hold) return false;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs) return false;
+    if (this._restartTimer) return false;
+    if ((this.interimTranscript || '').trim()) return false;
+
+    const now = Date.now();
+    const sinceEngine = this._sessionStartedAt ? now - this._sessionStartedAt : this.msSinceResult();
+    if (!this._gotHypothesis) {
+      return sinceEngine >= Transcriber.captionBootMs;
+    }
+    return this.msSinceResult() >= Transcriber.captionStaleMs;
+  }
+
+  /**
+   * 字幕が止まったとき、録音は触らず認識だけ付け直す。
+   * @returns {boolean}
+   */
+  reviveLiveCaption() {
+    if (!this.shouldRestart || !this.isListening) return false;
+    if (!this.isCaptionStalled()) return false;
+    if (this._lastReviveAt && Date.now() - this._lastReviveAt < 2500) return false;
+    this._lastReviveAt = Date.now();
+
+    if (!this._engineRunning) {
+      this._clearRestartTimer();
+      this._restartNow();
+      return true;
+    }
+
+    if (this._isDesktopJa()) {
+      if (!this._gotHypothesis) {
+        this._intentionalAbort = true;
+        try {
+          if (this.recognition) {
+            this.recognition.stop();
+            this._armStopWatch();
+          }
+        } catch {
+          this._intentionalAbort = false;
+        }
+        return true;
+      }
+      return this._unwedgeJaSession();
+    }
+
+    return this.nudge('stall');
   }
 
   /**
@@ -609,8 +665,9 @@ class Transcriber {
    * @returns {number}
    */
   msSinceResult() {
-    if (!this._lastResultAt) return Infinity;
-    return Date.now() - this._lastResultAt;
+    if (this._lastResultAt) return Date.now() - this._lastResultAt;
+    if (this._sessionStartedAt) return Date.now() - this._sessionStartedAt;
+    return Infinity;
   }
 
   /**
@@ -726,7 +783,6 @@ class Transcriber {
     this._heardSpeechAt = 0;
     this._speechEndedAt = 0;
     this._gotHypothesis = false;
-    this._lastResultAt = Date.now();
     this.retryCount = 0;
   }
 
@@ -1124,6 +1180,16 @@ class Transcriber {
    * start() から onstart まで待つ時間。これより早い gap nudge は初回認識を abort する。
    */
   static startAckMs = 1200;
+
+  /**
+   * onstart のあと一度も仮説が来ない desktop 向け。「再開」と自動復帰の目安。
+   */
+  static captionBootMs = 5000;
+
+  /**
+   * 仮説のあと結果が途切れたときの字幕停止。jaStaleStopMs と揃える。
+   */
+  static captionStaleMs = 4500;
 
   /**
    * iOS だけ発話ごとに終わらせて onend で付け直す。
