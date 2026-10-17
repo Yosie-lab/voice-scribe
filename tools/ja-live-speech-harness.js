@@ -602,8 +602,8 @@ assert(!index.includes('v=82'), 'index cache bust left 82');
 assert(!index.includes('v=81'), 'index cache bust left 81');
 assert(!index.includes('v=80'), 'index cache bust left 80');
 assert(!index.includes('v=79'), 'index cache bust left 79');
-assert(index.includes('v=90'), 'index is v90');
-assert(sw.includes("voicescribe-v90"), 'sw cache name');
+assert(index.includes('v=92'), 'index is v92');
+assert(sw.includes("voicescribe-v92"), 'sw cache name');
 assert(!app.includes('_gestureKickRecognition'), 'record does not pre-start STT on pointerdown');
 assert(app.includes('_kickLiveRecognitionAtRecordStart'), 'record start kicks STT once');
 assert(!sw.includes('voicescribe-v82'), 'old sw name gone');
@@ -614,7 +614,7 @@ assert(manifest.includes('"id": "./"'), 'manifest id stays stable for iOS home s
 assert(!app.includes('navigator.wakeLock.request'), 'wake lock does not block device lock');
 assert(!app.includes('screen.orientation.unlock'), 'no orientation unlock calls on iOS');
 assert(app.includes('_syncViewportHeight'), 'viewport resync on rotate for iOS Safari');
-assert(app.includes("APP_BUILD = 'v90'"), 'app build tag is v90');
+assert(app.includes("APP_BUILD = 'v92'"), 'app build tag is v92');
 assert(transcriberSrc.includes('msSinceCaptionChange'), 'stall uses caption content time');
 assert(transcriberSrc.includes('polishJaCommitted'), 'long ja repeats are polished');
 assert(css.includes('caption-stalled-recording'), 'stalled recording forces resume visible');
@@ -628,7 +628,7 @@ assert(app.includes('_stageDraftFromStop'), 'stop shows draft play before save f
 assert(transcriberSrc.includes('jaOverlapMax'), 'long ja overlap cap is named');
 assert(transcriberSrc.includes('collapseAdjacentJaRepeats'), 'adjacent ja repeats collapse after commit');
 assert(app.includes('app-ios-rotation-hint'), 'settings explain iPhone rotation limits');
-assert(app.includes('sw.js?v=90'), 'service worker registration is cache-busted');
+assert(app.includes('sw.js?v=92'), 'service worker registration is cache-busted');
 assert(transcriberSrc.includes('_cleanLiveInterim'), 'interim repeat uses the commit dedupe window');
 assert(transcriberSrc.includes('setContinuedPrefix'), 'resume prefix is excluded from dedupe anchor');
 assert(transcriberSrc.includes('iosCaptionBootMs'), 'ios waits longer before caption stall revive');
@@ -783,11 +783,11 @@ assert(gapRestarted === false, 'preempted restart did not run');
 
 const startFn = app.slice(app.indexOf('async _startRecording'), app.indexOf('async _stopRecording'));
 const recorderAt = startFn.indexOf('this.recorder.start');
-const desktopStart = startFn.indexOf('this.transcriber.start', recorderAt);
-const iosStart = startFn.lastIndexOf('this.transcriber.start', recorderAt);
-assert(iosStart !== -1 && iosStart < recorderAt, 'iOS recognition stays before recorder');
-assert(desktopStart > recorderAt, 'desktop recognition stays after recorder');
-assert(startFn.includes('if (!recognitionFirst)'), 'desktop path is gated');
+const bootstrapAt = startFn.indexOf('_bootstrapLiveTranscriptionAfterMic');
+assert(recorderAt !== -1 && bootstrapAt > recorderAt, 'STT bootstrap runs right after mic open');
+assert(startFn.indexOf('if (recognitionFirst)') !== -1, 'iOS pre-mic STT kick in user gesture');
+assert(transcriberSrc.includes('get startBeforeRecorder') && transcriberSrc.includes('return this._isIOS'), 'iOS starts STT before mic, desktop after');
+assert(app.includes('reattachAfterSharedMic({ micContended: true })'), 'post-mic STT always reattaches');
 
 function countSpan(text, span) {
   const norm = (text || '').replace(/[。、！？!?\s\u3000]/g, '');

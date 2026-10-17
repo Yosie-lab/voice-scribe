@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v90';
+const APP_BUILD = 'v92';
 
 class VoiceScribeApp {
   constructor() {
@@ -282,8 +282,6 @@ class VoiceScribeApp {
     this._stopDraftPlayback();
     this._bindLiveTranscriptCallback();
     this.transcriber.setLanguage(this._activeLanguage());
-    const recognitionFirst = this.transcriber.startBeforeRecorder;
-
     if (continueDraft && this._draftId) {
       this._armContinueDraftPrefixFromMemory();
     } else {
@@ -291,6 +289,7 @@ class VoiceScribeApp {
       this._resumePrefix = '';
     }
 
+    const recognitionFirst = this.transcriber.startBeforeRecorder;
     if (recognitionFirst) {
       this._kickLiveRecognitionAtRecordStart();
       if (this._resumePrefix) this._primeContinuedTranscript();
@@ -365,27 +364,26 @@ class VoiceScribeApp {
       placeholderEl.style.display = 'none';
     }
 
+    let stream = null;
     try {
-      const stream = await this.recorder.start({
+      stream = await this.recorder.start({
         language: this.transcriber.language,
-        ios: this.transcriber.startBeforeRecorder
+        ios: this._isIOSDevice()
       });
       if (!this.isRecording) {
         try { await this.recorder.stop(); } catch { /* 停止済み */ }
         return;
       }
-      if (this.visualizer && stream) {
-        this.visualizer.stopIdleAnimation();
-        await this.visualizer.connectStream(stream);
-      }
+      this._bootstrapLiveTranscriptionAfterMic();
     } catch (recErr) {
       console.warn('MediaRecorder start warning:', recErr);
     }
 
     if (!this.isRecording) return;
 
-    if (!recognitionFirst) {
-      this._kickLiveRecognitionAtRecordStart();
+    if (this.visualizer && stream) {
+      this.visualizer.stopIdleAnimation();
+      await this.visualizer.connectStream(stream);
     }
 
     if (!this.isRecording) return;
@@ -646,6 +644,23 @@ class VoiceScribeApp {
     const base = this._longerText(this._draftTranscript, '');
     this._resumeBase = base;
     this._resumePrefix = base ? `${base}\n\n— 続き ${this._resumeStamp()} —\n` : '';
+  }
+
+  /**
+   * マイク取得直後（await 最小）にライブ STT を付ける。
+   * @private
+   */
+  _bootstrapLiveTranscriptionAfterMic() {
+    if (!this.isRecording || this._userPaused) return;
+    if (!this.transcriber.startBeforeRecorder) {
+      this._kickLiveRecognitionAtRecordStart();
+    }
+    if (this._resumePrefix) this._primeContinuedTranscript();
+    // onstart だけ立って結果が来ないゾンビを避けるため、マイク取得後は常に付け直す。
+    this.transcriber.reattachAfterSharedMic({ micContended: true });
+    if (!this.transcriber.isEngineRunning() && this._isIOSDevice()) {
+      this.transcriber.manualResumeListening(false);
+    }
   }
 
   /**
@@ -1112,7 +1127,7 @@ class VoiceScribeApp {
         return;
       }
       // desktop は死んだマイクのあとに認識を起こす。タップの先走りで getUserMedia より前に start しない。
-      if (!this.transcriber.startBeforeRecorder && this.recorder.needsRecovery()) return;
+      if (!this._isIOSDevice() && this.recorder.needsRecovery()) return;
       this.transcriber.continueListening();
     };
     this._recognitionGesture = onPointer;
@@ -1145,8 +1160,7 @@ class VoiceScribeApp {
     }
 
     this._userPaused = false;
-    const ios = this.transcriber.startBeforeRecorder;
-    // iOS は await より前、このタップの中で認識を付ける。
+    const ios = this._isIOSDevice();
     if (ios) this.transcriber.continueListening();
     let stream = this.recorder.stream;
     if (!this.recorder.resume()) {
@@ -1184,10 +1198,9 @@ class VoiceScribeApp {
    */
   async _resumeReading() {
     if (!this.isRecording || this._userPaused || this._stopPromise) return;
-    const ios = this.transcriber.startBeforeRecorder;
+    const ios = this._isIOSDevice();
     const captureDown = this.recorder.needsRecovery();
 
-    // iOS: マイク復旧より先に認識を付ける（await 前）。録音経路の復旧は後ろで非同期。
     const kicked = this.transcriber.manualResumeListening(true);
     this._recoverAttempts = 0;
     this._startCaptionWatch();
@@ -1250,13 +1263,11 @@ class VoiceScribeApp {
     const now = Date.now();
     if (now - this._lastMicReattachAt < 400) return;
     this._lastMicReattachAt = now;
-    const ios = this.transcriber.startBeforeRecorder;
-    if (ios) {
-      this.transcriber.reattachAfterSharedMic({ micContended: true });
-      return;
-    }
     if (!this.transcriber.isEngineRunning()) {
       this.transcriber.reattachAfterSharedMic({ micContended: true });
+    }
+    if (!this.transcriber.isEngineRunning() && this._isIOSDevice()) {
+      this.transcriber.manualResumeListening(false);
     }
   }
 
@@ -1366,7 +1377,7 @@ class VoiceScribeApp {
     this._stopSpeechWatch();
     this._speechProfile = Transcriber.speechWatchProfile(
       this.transcriber.language,
-      this.transcriber.startBeforeRecorder
+      this._isIOSDevice()
     );
     this._speechFloor = this._speechProfile.floor;
     this._stallFloor = this._speechProfile.stallFloor ?? this._speechProfile.floor;
@@ -1631,7 +1642,7 @@ class VoiceScribeApp {
     if (!this.isRecording || gen !== this._recoverGen || this._userPaused) return;
     this._recoverAttempts = 0;
     // マイクを取り直したあとに認識を付ける。先に start すると desktop Chrome は abort する。
-    if (captureDown && !this.transcriber.startBeforeRecorder) {
+    if (captureDown && !this._isIOSDevice()) {
       this.transcriber.continueListening();
     } else {
       this.transcriber.resumeAfterBackground();
@@ -1698,7 +1709,7 @@ class VoiceScribeApp {
       '・<b>横画面</b>にする: コントロールセンター → 「画面の向きをロック」を OFF にしてから端末を横に。<br>',
       '・<b>ホーム画面</b>から起動している場合: アイコンを削除 → Safari で ',
       '<a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener">yosie-lab.github.io/voice-scribe</a>',
-      ' を開く → ⚙️ でビルド v90 を確認 → 共有 → ホーム画面に追加。',
+      ' を開く → ⚙️ でビルド v92 を確認 → 共有 → ホーム画面に追加。',
       '<br>今朝のアップデートで向きがおかしくなった場合も、上と同じ手順で古いホーム画面アイコンを消してください。'
     ].join('');
   }
@@ -2385,7 +2396,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=90');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=92');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();

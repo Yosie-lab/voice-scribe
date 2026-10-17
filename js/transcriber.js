@@ -420,8 +420,9 @@ class Transcriber {
   }
 
   /**
-   * iPhone Safari はユーザージェスチャ内で認識を先に start する。
-   * desktop Chromium は getUserMedia より前に start すると認識が abort される。
+   * iOS はユーザージェスチャ内で先に start する（await getUserMedia 後は start が無視されやすい）。
+   * マイク取得後は app が reattachAfterSharedMic({ micContended: true }) で必ず付け直す。
+   * desktop Chromium は getUserMedia より前の start で abort するため false。
    * @returns {boolean}
    */
   get startBeforeRecorder() {
