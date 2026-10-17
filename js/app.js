@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v89';
+const APP_BUILD = 'v90';
 
 class VoiceScribeApp {
   constructor() {
@@ -64,6 +64,7 @@ class VoiceScribeApp {
     this._stallFloor = 0.012;
     this._stallHotMs = 0;
     this._transcriptEpoch = 0;
+    this._lastMicReattachAt = 0;
 
     window.app = this;
   }
@@ -280,9 +281,8 @@ class VoiceScribeApp {
     try {
     this._stopDraftPlayback();
     this._bindLiveTranscriptCallback();
-    this._restoreLockCheckpoint().then((restored) => {
-      if (restored) this._rememberDraft(restored);
-    }).catch(() => {});
+    this.transcriber.setLanguage(this._activeLanguage());
+    const recognitionFirst = this.transcriber.startBeforeRecorder;
 
     if (continueDraft && this._draftId) {
       this._armContinueDraftPrefixFromMemory();
@@ -290,6 +290,15 @@ class VoiceScribeApp {
       this._resumeBase = '';
       this._resumePrefix = '';
     }
+
+    if (recognitionFirst) {
+      this._kickLiveRecognitionAtRecordStart();
+      if (this._resumePrefix) this._primeContinuedTranscript();
+    }
+
+    this._restoreLockCheckpoint().then((restored) => {
+      if (restored) this._rememberDraft(restored);
+    }).catch(() => {});
 
     let prior = null;
     if (continueDraft && this._draftId) {
@@ -348,16 +357,12 @@ class VoiceScribeApp {
     this._startTimer();
     this._syncDraftControls();
     this.ui.updateTranscript(this._resumePrefix || '', '', true);
+    if (this._resumePrefix) this._primeContinuedTranscript();
 
     // プレースホルダーを非表示
     const placeholderEl = document.getElementById('transcript-placeholder');
     if (placeholderEl) {
       placeholderEl.style.display = 'none';
-    }
-
-    const recognitionFirst = this.transcriber.startBeforeRecorder;
-    if (recognitionFirst) {
-      this._kickLiveRecognitionAtRecordStart();
     }
 
     try {
@@ -384,9 +389,7 @@ class VoiceScribeApp {
     }
 
     if (!this.isRecording) return;
-    if (!this.transcriber.isEngineRunning()) {
-      this.transcriber.reattachAfterSharedMic();
-    }
+    this._reattachLiveSttAfterMic();
     this._ensureLiveRecognition();
     this._startSpeechWatch();
     this._startCaptionWatch();
@@ -1204,9 +1207,7 @@ class VoiceScribeApp {
           this.visualizer.stopIdleAnimation();
           this.visualizer.connectStream(stream);
         }
-        if (!this.transcriber.isEngineRunning()) {
-          this.transcriber.reattachAfterSharedMic();
-        }
+        this._reattachLiveSttAfterMic();
         this._syncResumeReading();
       }).catch((error) => {
         console.warn('読み取り再開でマイクを戻せませんでした:', error);
@@ -1235,10 +1236,28 @@ class VoiceScribeApp {
       await this.visualizer.connectStream(stream);
     }
 
-    if (!this.transcriber.isEngineRunning()) {
-      this.transcriber.reattachAfterSharedMic();
-    }
+    this._reattachLiveSttAfterMic();
     this._syncResumeReading();
+  }
+
+  /**
+   * 録音ストリーム取得後、落ちた／ゾンビの認識を付け直す。
+   * @private
+   */
+  _reattachLiveSttAfterMic() {
+    if (!this.isRecording || this._userPaused) return;
+    if (!this.recorder || this.recorder.state !== 'recording') return;
+    const now = Date.now();
+    if (now - this._lastMicReattachAt < 400) return;
+    this._lastMicReattachAt = now;
+    const ios = this.transcriber.startBeforeRecorder;
+    if (ios) {
+      this.transcriber.reattachAfterSharedMic({ micContended: true });
+      return;
+    }
+    if (!this.transcriber.isEngineRunning()) {
+      this.transcriber.reattachAfterSharedMic({ micContended: true });
+    }
   }
 
   /**
@@ -1296,9 +1315,14 @@ class VoiceScribeApp {
     if (this.transcriber.inUserResumeGrace() && (this.transcriber.awaitingStartAck() || this.transcriber.isEngineRunning())) {
       return;
     }
-    if (!this.transcriber.isEngineRunning() && this.recorder && this.recorder.state === 'recording') {
-      this.transcriber.reattachAfterSharedMic();
-      return;
+    if (this.recorder && this.recorder.state === 'recording') {
+      const live = this.transcriber.isEngineRunning();
+      const interim = (this.transcriber.interimTranscript || '').trim();
+      const stale = this.transcriber.msSinceResult() > 2500;
+      if (!live || (stale && !interim)) {
+        this._reattachLiveSttAfterMic();
+        return;
+      }
     }
     if (this.transcriber.awaitingStartAck()) return;
     if (this.transcriber.isEngineRunning() && !this.transcriber.isCaptionStalled()) return;
@@ -1323,6 +1347,10 @@ class VoiceScribeApp {
     this._syncResumeReading();
     if (this.transcriber._resumeNeeded) return;
     if (this.transcriber.inUserResumeGrace()) return;
+    if (this.recorder && this.recorder.state === 'recording' && !this.transcriber.isEngineRunning()
+      && !this.transcriber.inUserResumeGrace() && !this.transcriber.awaitingStartAck()) {
+      this._reattachLiveSttAfterMic();
+    }
     if (this.transcriber.isCaptionStalled()) {
       this.transcriber.reviveLiveCaption();
       this._syncResumeReading();
@@ -1670,7 +1698,7 @@ class VoiceScribeApp {
       '・<b>横画面</b>にする: コントロールセンター → 「画面の向きをロック」を OFF にしてから端末を横に。<br>',
       '・<b>ホーム画面</b>から起動している場合: アイコンを削除 → Safari で ',
       '<a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener">yosie-lab.github.io/voice-scribe</a>',
-      ' を開く → ⚙️ でビルド v89 を確認 → 共有 → ホーム画面に追加。',
+      ' を開く → ⚙️ でビルド v90 を確認 → 共有 → ホーム画面に追加。',
       '<br>今朝のアップデートで向きがおかしくなった場合も、上と同じ手順で古いホーム画面アイコンを消してください。'
     ].join('');
   }
@@ -2357,7 +2385,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=89');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=90');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();

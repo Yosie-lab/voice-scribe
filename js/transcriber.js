@@ -622,15 +622,22 @@ class Transcriber {
   /**
    * MediaRecorder がマイクを取ったあと、onstart 前に落ちた認識を付け直す。
    * ack 待ちを中断する（再開 grace 中の二重 init とは別経路）。
+   * @param {{micContended?: boolean}} [options]
    * @returns {boolean}
    */
-  reattachAfterSharedMic() {
+  reattachAfterSharedMic(options) {
     if (!this.shouldRestart || !this.isListening) return false;
-    if (this._engineRunning) return true;
+    const micContended = !!(options && options.micContended);
+    if (this._engineRunning && !micContended) {
+      const ms = this.msSinceResult();
+      if (ms < 1500 || (this.interimTranscript || '').trim()) return true;
+    }
+    if (micContended) this._engineRunning = false;
     this._clearStartAckWatch();
     this._pendingStartAt = 0;
     const hadText = !!((this.finalTranscript || '').trim() || (this.interimTranscript || '').trim());
-    for (let attempt = 0; attempt < 3; attempt++) {
+    const maxAttempts = micContended && this._isIOS ? 6 : 3;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       this.init();
       this._sessionStartedAt = Date.now();
       if (hadText) this._gotHypothesis = true;
