@@ -430,15 +430,6 @@ body::before {
   transition: var(--transition-fast);
 }
 
-.action-pill-btn.resume-reading-pill {
-  border-color: rgba(251, 191, 36, 0.9);
-  background: rgba(251, 191, 36, 0.18);
-  color: #fde68a;
-  font-weight: 700;
-  z-index: 12;
-  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.35);
-}
-
 .action-pill-btn:active {
   background: var(--color-accent-primary);
   color: #080b14;
@@ -533,33 +524,6 @@ body::before {
   justify-content: center;
   flex-wrap: wrap;
   gap: 12px;
-}
-
-body.caption-stalled-recording #resume-reading-header-btn,
-body.caption-stalled-recording #resume-reading-btn {
-  display: inline-flex !important;
-}
-
-.resume-reading-btn {
-  position: relative;
-  z-index: 12;
-  height: 42px;
-  padding: 0 14px;
-  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.35);
-  border-radius: var(--radius-full);
-  border: 1px solid rgba(251, 191, 36, 0.9);
-  background: rgba(251, 191, 36, 0.18);
-  color: #fde68a;
-  font-size: 0.92rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.resume-reading-btn:active {
-  background: rgba(251, 191, 36, 0.4);
-  color: #080b14;
 }
 
 .control-btn.mini {

@@ -9,7 +9,6 @@ const VoiceScribeRecordingHealth = {
   _bindLiveTranscriptCallback() {
     this.transcriber.onResult = (finalText, interimText) => {
       this.ui.updateTranscript(finalText, interimText, true);
-      this._syncResumeReading();
     };
   }
 ,
@@ -32,32 +31,96 @@ const VoiceScribeRecordingHealth = {
    */
   _bootstrapLiveTranscriptionAfterMic() {
     if (!this.isRecording || this._userPaused) return;
+    const ios = this._isIOSDevice();
     if (!this.transcriber.startBeforeRecorder) {
       this._kickLiveRecognitionAtRecordStart();
     }
     if (this._resumePrefix) this._primeContinuedTranscript();
-    // onstart だけ立って結果が来ないゾンビを避けるため、マイク取得後は常に付け直す。
-    this.transcriber.reattachAfterSharedMic({ micContended: true });
-    if (!this.transcriber.isEngineRunning() && this._isIOSDevice()) {
-      this.transcriber.manualResumeListening(false);
+    if (ios) {
+      if (!this.transcriber.isEngineRunning() || this.transcriber.isZombieEngine()) {
+        this.transcriber.reattachAfterSharedMic({ micContended: true });
+      }
+      if (!this.transcriber.isEngineRunning()) {
+        this.transcriber.manualResumeListening(false);
+      }
+      this._scheduleIosPostMicWarmup();
+    } else {
+      this.transcriber.reattachAfterSharedMic({ micContended: true });
     }
   }
 ,
 
   /**
-   * 録音開始時に認識を付ける（1 回だけ start。二重 init で録音/STT が死なない）。
+   * iOS: 録音ボタン pointerdown で await より先に STT を付ける。
+   * @private
+   */
+  _gestureKickRecognition() {
+    if (!this.transcriber.startBeforeRecorder) return;
+    if (this.isRecording || this._starting || this._stopPromise) return;
+    this._bindLiveTranscriptCallback();
+    this.transcriber.setLanguage(this._activeLanguage());
+    if (this.transcriber.isEngineRunning()) return;
+    try {
+      if (this.transcriber.isListening) {
+        this.transcriber.manualResumeListening(false);
+      } else {
+        this.transcriber.start();
+      }
+    } catch (error) {
+      console.warn('SpeechRecognition gesture kick:', error);
+    }
+  }
+,
+
+  /**
+   * @private
+   */
+  _scheduleIosPostMicWarmup() {
+    if (this._iosSttWarmupTimer) clearTimeout(this._iosSttWarmupTimer);
+    this._iosSttWarmupTimer = setTimeout(() => {
+      this._iosSttWarmupTimer = null;
+      if (!this.isRecording || this._userPaused) return;
+      const t = this.transcriber;
+      const live = (t.getFullTranscript() || '').trim();
+      if (live && !t.isZombieEngine()) return;
+      if (!t.isEngineRunning() || t.isZombieEngine()) {
+        t.reattachAfterSharedMic({ micContended: true });
+      }
+      this._autoRecoverLiveStt();
+    }, 550);
+  }
+,
+
+  /**
+   * @private
+   */
+  _stopIosSttWarmup() {
+    if (this._iosSttWarmupTimer) {
+      clearTimeout(this._iosSttWarmupTimer);
+      this._iosSttWarmupTimer = null;
+    }
+  }
+,
+
+  /**
+   * 録音開始時に認識を付ける（ジェスチャ先走り後の二重 start を避ける）。
    * @private
    */
   _kickLiveRecognitionAtRecordStart() {
     let started = false;
     try {
-      started = this.transcriber.start() !== false;
+      if (this.transcriber.isEngineRunning()) {
+        started = true;
+      } else if (this.transcriber.isListening) {
+        started = this.transcriber.manualResumeListening(false);
+      } else {
+        started = this.transcriber.start() !== false;
+      }
     } catch (error) {
       console.warn('SpeechRecognition start warning:', error);
     }
     if (!started) {
       this.transcriber.armResume();
-      this.transcriber.continueListening();
     }
     this._primeContinuedTranscript();
     return started;
@@ -522,7 +585,7 @@ const VoiceScribeRecordingHealth = {
       }
       const target = event.target;
       // クリアは次の click に任せる。このリスナはイベントを止めない。
-      if (target && target.closest && target.closest('#record-btn, #pause-btn, #clear-transcript-btn, #continue-recording-btn, #draft-play-btn, #resume-reading-btn, #resume-reading-header-btn')) return;
+      if (target && target.closest && target.closest('#record-btn, #pause-btn, #clear-transcript-btn, #continue-recording-btn, #draft-play-btn')) return;
       if (this.transcriber.isEngineRunning()) {
         document.removeEventListener('pointerdown', onPointer, true);
         this._recognitionGesture = null;
@@ -558,7 +621,6 @@ const VoiceScribeRecordingHealth = {
       this.ui.setRecordingStatus('paused');
       if (pauseBtn) pauseBtn.textContent = '▶️';
       if (this.visualizer) this.visualizer.startIdleAnimation();
-      this._syncResumeReading();
       return;
     }
 
@@ -577,7 +639,6 @@ const VoiceScribeRecordingHealth = {
         this.ui.setRecordingStatus('paused');
         if (pauseBtn) pauseBtn.textContent = '▶️';
         this.ui.showToast('マイクを再開できませんでした。', 'error');
-        this._syncResumeReading();
         return;
       }
     }
@@ -590,72 +651,39 @@ const VoiceScribeRecordingHealth = {
       this.visualizer.stopIdleAnimation();
       await this.visualizer.connectStream(stream);
     }
-    this._syncResumeReading();
+    this._autoRecoverLiveStt();
   }
 ,
 
   /**
-   * 読み取りが止まったあとに、残っているテキストを消さず認識を付け直す。
-   * desktop は生きているストリームを使い、死んでいれば録音経路で取り直してから認識する。
-   * iOS はタップの同期区間で continuous:false の認識を先に start する。
+   * 字幕が止まった／認識が落ちたら自動で付け直す（再開ボタンなし）。
    * @private
    */
-  async _resumeReading() {
-    if (!this.isRecording || this._userPaused || this._stopPromise) return;
-    const ios = this._isIOSDevice();
-    const captureDown = this.recorder.needsRecovery();
-
-    const kicked = this.transcriber.manualResumeListening(true);
-    this.transcriber.reattachAfterSharedMic({ micContended: true });
-    this._recoverAttempts = 0;
-    this._startCaptionWatch();
-    this._startSpeechWatch();
-    this._armResumeBoost();
-    this._syncResumeReading();
-    if (!kicked) {
-      this.ui.showToast('再開できませんでした。もう一度「再開」をタップしてください', 'error', 3500);
-    } else {
-      this.ui.showToast('🎙️ 聞き取りを開始しました。話してください', 'success', 2500);
-    }
-
-    if (captureDown && ios) {
+  _autoRecoverLiveStt() {
+    if (!this.isRecording || this._userPaused || document.visibilityState === 'hidden') return;
+    const t = this.transcriber;
+    if (this.recorder && this.recorder.needsRecovery()) {
       this.recorder.ensureCapture().then((stream) => {
         if (!this.isRecording || this._userPaused) return;
         if (this.visualizer && stream) {
           this.visualizer.stopIdleAnimation();
-          this.visualizer.connectStream(stream);
+          void this.visualizer.connectStream(stream);
         }
         this._reattachLiveSttAfterMic();
-        this._syncResumeReading();
       }).catch((error) => {
-        console.warn('読み取り再開でマイクを戻せませんでした:', error);
-        this.ui.showToast('マイクの復旧に失敗しました。もう一度「再開」をタップしてください', 'error', 4000);
-        this.transcriber._signalResumeNeeded();
-        this._syncResumeReading();
+        console.warn('マイク自動復旧:', error);
       });
       return;
     }
-
-    let stream = this.recorder.stream;
-    if (captureDown) {
-      try {
-        stream = await this.recorder.ensureCapture();
-      } catch (error) {
-        console.warn('読み取り再開でマイクを戻せませんでした:', error);
-        this.ui.showToast('マイクを再開できませんでした。', 'error');
-        this._syncResumeReading();
-        return;
-      }
+    if (t._resumeNeeded) t._resumeNeeded = false;
+    if (t.isZombieEngine() || !t.isEngineRunning()) {
+      this._reattachLiveSttAfterMic();
+    } else if (t.isCaptionStalled()) {
+      t.reviveLiveCaption();
+    } else if (t.needsResume()) {
+      t.continueListening();
     }
-
-    if (!this.isRecording || this._userPaused) return;
-    if (this.visualizer && stream) {
-      this.visualizer.stopIdleAnimation();
-      await this.visualizer.connectStream(stream);
-    }
-
-    this._reattachLiveSttAfterMic();
-    this._syncResumeReading();
+    this._ensureLiveRecognition();
   }
 ,
 
@@ -665,6 +693,7 @@ const VoiceScribeRecordingHealth = {
    */
   _reattachLiveSttAfterMic() {
     if (!this.isRecording || this._userPaused) return;
+    if (this.transcriber.inIosPhraseGap && this.transcriber.inIosPhraseGap()) return;
     if (!this.recorder || this.recorder.state !== 'recording') return;
     const now = Date.now();
     if (now - this._lastMicReattachAt < 400) return;
@@ -679,69 +708,11 @@ const VoiceScribeRecordingHealth = {
 ,
 
   /**
-   * 再開タップ後しばらく、認識が落ちたら自動で付け直す（iOS の遅れ対策）。
-   * @private
-   */
-  _armResumeBoost() {
-    if (this._resumeBoostTimer) clearInterval(this._resumeBoostTimer);
-    let ticks = 0;
-    const tick = () => {
-      ticks++;
-      if (!this.isRecording || this._userPaused || ticks > 20) {
-        clearInterval(this._resumeBoostTimer);
-        this._resumeBoostTimer = null;
-        return;
-      }
-      if (!this.transcriber.inUserResumeGrace()) return;
-      if (this.transcriber.isEngineRunning() && !this.transcriber.isZombieEngine()) return;
-      if (this.transcriber.awaitingStartAck() && !this.transcriber.isZombieEngine()) return;
-      this.transcriber.reattachAfterSharedMic({ micContended: true });
-      if (!this.transcriber.isEngineRunning()) {
-        this.transcriber.manualResumeListening(false);
-      }
-      this._syncResumeReading();
-    };
-    this._resumeBoostTimer = setInterval(tick, 400);
-  }
-,
-
-  /**
-   * 認識が落ちている、または録音トラックが切れているときだけ「再開」を出す。
-   * @private
-   */
-  _syncResumeReading() {
-    const btn = document.getElementById('resume-reading-btn');
-    const headerBtn = document.getElementById('resume-reading-header-btn');
-    if (!this.transcriber) return;
-    const targets = [btn, headerBtn].filter(Boolean);
-    if (!targets.length) return;
-    if (document.visibilityState === 'hidden') {
-      targets.forEach((el) => { el.style.display = 'none'; });
-      return;
-    }
-    const captureDown = !!(this.recorder && this.recorder.needsRecovery());
-    const recognitionDown = this.transcriber.shouldShowManualResume() || captureDown;
-    const show = !!(this.isRecording && !this._userPaused && recognitionDown);
-    targets.forEach((el) => { el.style.display = show ? 'inline-flex' : 'none'; });
-    if (typeof document !== 'undefined' && document.body) {
-      document.body.classList.toggle('caption-stalled-recording', show);
-    }
-  }
-,
-
-  /**
    * 録音は動いているのに認識だけ付いていないとき、同じジェスチャ内で付け直す。
    * @private
    */
   _ensureLiveRecognition() {
     if (!this.isRecording || this._userPaused) return;
-    if (this.transcriber.inUserResumeGrace()) {
-      if (this.transcriber.isZombieEngine() || this.transcriber.isCaptionStalled()) {
-        this._reattachLiveSttAfterMic();
-      } else if (this.transcriber.awaitingStartAck() || this.transcriber.isEngineRunning()) {
-        return;
-      }
-    }
     if (this.recorder && this.recorder.state === 'recording') {
       const live = this.transcriber.isEngineRunning();
       const interim = (this.transcriber.interimTranscript || '').trim();
@@ -772,23 +743,7 @@ const VoiceScribeRecordingHealth = {
       this.transcriber.shouldRestart = true;
       this.transcriber.isListening = true;
     }
-    this._syncResumeReading();
-    if (this.transcriber._resumeNeeded) return;
-    if (this.transcriber.inUserResumeGrace()) {
-      if (this.transcriber.isZombieEngine() || this.transcriber.isCaptionStalled()) {
-        this.transcriber.reattachAfterSharedMic({ micContended: true });
-      }
-      this._syncResumeReading();
-      return;
-    }
-    if (this.recorder && this.recorder.state === 'recording' && !this.transcriber.isEngineRunning()
-      && !this.transcriber.inUserResumeGrace() && !this.transcriber.awaitingStartAck()) {
-      this._reattachLiveSttAfterMic();
-    }
-    if (this.transcriber.isCaptionStalled()) {
-      this.transcriber.reviveLiveCaption();
-      this._syncResumeReading();
-    }
+    this._autoRecoverLiveStt();
   }
 ,
 
@@ -830,7 +785,7 @@ const VoiceScribeRecordingHealth = {
    */
   _startCaptionWatch() {
     this._stopCaptionWatch();
-    this._captionWatch = setInterval(() => this._checkCaptionHealth(), 1000);
+    this._captionWatch = setInterval(() => this._checkCaptionHealth(), 500);
   }
 ,
 
@@ -889,7 +844,9 @@ const VoiceScribeRecordingHealth = {
     if (this._speechHotMs < profile.gapMs && this._stallHotMs < profile.stallMs) return;
 
     if (this.transcriber.isZombieEngine()) {
-      this.transcriber.reattachAfterSharedMic({ micContended: true });
+      if (!this.transcriber.inIosPhraseGap()) {
+        this.transcriber.reattachAfterSharedMic({ micContended: true });
+      }
       this._speechHotMs = 0;
       this._stallHotMs = 0;
       return;
