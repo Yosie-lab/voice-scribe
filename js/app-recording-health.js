@@ -32,94 +32,26 @@ const VoiceScribeRecordingHealth = {
    */
   _bootstrapLiveTranscriptionAfterMic() {
     if (!this.isRecording || this._userPaused) return;
-    const ios = this._isIOSDevice();
     if (!this.transcriber.startBeforeRecorder) {
       this._kickLiveRecognitionAtRecordStart();
     }
     if (this._resumePrefix) this._primeContinuedTranscript();
-    if (ios) {
-      // ジェスチャ内 kick 直後の無条件 reattach は post-await start を失敗させ「字幕なし」になりやすい。
-      if (!this.transcriber.isEngineRunning() || this.transcriber.isZombieEngine()) {
-        this.transcriber.reattachAfterSharedMic({ micContended: true });
-      }
-      if (!this.transcriber.isEngineRunning()) {
-        this.transcriber.manualResumeListening(false);
-      }
-      this._scheduleIosPostMicWarmup();
-    } else {
-      this.transcriber.reattachAfterSharedMic({ micContended: true });
+    // onstart だけ立って結果が来ないゾンビを避けるため、マイク取得後は常に付け直す。
+    this.transcriber.reattachAfterSharedMic({ micContended: true });
+    if (!this.transcriber.isEngineRunning() && this._isIOSDevice()) {
+      this.transcriber.manualResumeListening(false);
     }
   }
 ,
 
   /**
-   * iOS: 録音ボタン pointerdown で await より先に認識を付ける（click だけだと遅れやすい）。
-   * @private
-   */
-  _gestureKickRecognition() {
-    if (!this.transcriber.startBeforeRecorder) return;
-    if (this.isRecording || this._starting || this._stopPromise) return;
-    this._bindLiveTranscriptCallback();
-    this.transcriber.setLanguage(this._activeLanguage());
-    if (this.transcriber.isEngineRunning()) return;
-    try {
-      if (this.transcriber.isListening) {
-        this.transcriber.manualResumeListening(false);
-      } else {
-        this.transcriber.start();
-      }
-    } catch (error) {
-      console.warn('SpeechRecognition gesture kick:', error);
-    }
-  }
-,
-
-  /**
-   * マイク取得後、まだ字幕が無い iOS だけ短く待ってから付け直す。
-   * @private
-   */
-  _scheduleIosPostMicWarmup() {
-    if (this._iosSttWarmupTimer) clearTimeout(this._iosSttWarmupTimer);
-    this._iosSttWarmupTimer = setTimeout(() => {
-      this._iosSttWarmupTimer = null;
-      if (!this.isRecording || this._userPaused) return;
-      const t = this.transcriber;
-      const live = (t.getFullTranscript() || '').trim();
-      if (live && !t.isZombieEngine()) return;
-      if (!t.isEngineRunning() || t.isZombieEngine()) {
-        t.reattachAfterSharedMic({ micContended: true });
-      }
-      this._ensureLiveRecognition();
-      this._syncResumeReading();
-    }, 550);
-  }
-,
-
-  /**
-   * @private
-   */
-  _stopIosSttWarmup() {
-    if (this._iosSttWarmupTimer) {
-      clearTimeout(this._iosSttWarmupTimer);
-      this._iosSttWarmupTimer = null;
-    }
-  }
-,
-
-  /**
-   * 録音開始時に認識を付ける（ジェスチャ先走り後の二重 start を避ける）。
+   * 録音開始時に認識を付ける（1 回だけ start。二重 init で録音/STT が死なない）。
    * @private
    */
   _kickLiveRecognitionAtRecordStart() {
     let started = false;
     try {
-      if (this.transcriber.isEngineRunning()) {
-        started = true;
-      } else if (this.transcriber.isListening) {
-        started = this.transcriber.manualResumeListening(false);
-      } else {
-        started = this.transcriber.start() !== false;
-      }
+      started = this.transcriber.start() !== false;
     } catch (error) {
       console.warn('SpeechRecognition start warning:', error);
     }
@@ -898,8 +830,7 @@ const VoiceScribeRecordingHealth = {
    */
   _startCaptionWatch() {
     this._stopCaptionWatch();
-    const ms = this._isIOSDevice() ? 800 : 1000;
-    this._captionWatch = setInterval(() => this._checkCaptionHealth(), ms);
+    this._captionWatch = setInterval(() => this._checkCaptionHealth(), 1000);
   }
 ,
 
