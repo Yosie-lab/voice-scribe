@@ -133,7 +133,12 @@ const TranscriberPolicy = {
   resumeGapMs: 1200,
 
   /**
-   * 回復の stop() のあと onend が来ないとき、認識だけ付け直すまでの待ち。
+   * iOS onend 〜 scheduled restart。暫定を消さず reattach / stall 判定を止める。
+   */
+  iosPhraseGapMs: 1400,
+
+  /**
+   * 回復の stop() のあと onend が来ないとき、認識だけ付け直すまでの wait。
    */
   stopWatchMs: 800,
 
@@ -163,7 +168,7 @@ const TranscriberPolicy = {
   /**
    * iOS は発話ごとに onend があり、desktop より早く「止まった」ように見える。
    */
-  iosCaptionStaleMs: 3200,
+  iosCaptionStaleMs: 4800,
 
   /** iOS で「再開」を出し始めるまで（確定が動いていない時間） */
   iosResumeOfferMs: 1800,

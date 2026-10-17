@@ -733,6 +733,7 @@ const VoiceScribeRecordingHealth = {
    */
   _reattachLiveSttAfterMic() {
     if (!this.isRecording || this._userPaused) return;
+    if (this.transcriber.inIosPhraseGap && this.transcriber.inIosPhraseGap()) return;
     if (!this.recorder || this.recorder.state !== 'recording') return;
     const now = Date.now();
     if (now - this._lastMicReattachAt < 400) return;
@@ -958,7 +959,9 @@ const VoiceScribeRecordingHealth = {
     if (this._speechHotMs < profile.gapMs && this._stallHotMs < profile.stallMs) return;
 
     if (this.transcriber.isZombieEngine()) {
-      this.transcriber.reattachAfterSharedMic({ micContended: true });
+      if (!this.transcriber.inIosPhraseGap()) {
+        this.transcriber.reattachAfterSharedMic({ micContended: true });
+      }
       this._speechHotMs = 0;
       this._stallHotMs = 0;
       return;
