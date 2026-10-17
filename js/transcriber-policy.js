@@ -89,8 +89,8 @@ const TranscriberPolicy = {
    */
   restartDelay(kind, isIOS, _language) {
     if (isIOS) {
-      if (kind === 'no-speech' || kind === 'stall') return 70;
-      return 90;
+      if (kind === 'no-speech' || kind === 'stall') return 55;
+      return 75;
     }
     if (kind === 'no-speech') return 25;
     if (kind === 'stall') return 30;
@@ -133,6 +133,11 @@ const TranscriberPolicy = {
   resumeGapMs: 1200,
 
   /**
+   * iOS onend 〜 scheduled restart。暫定を消さず stall / reattach を抑える。
+   */
+  iosPhraseGapMs: 1400,
+
+  /**
    * 回復の stop() のあと onend が来ないとき、認識だけ付け直すまでの待ち。
    */
   stopWatchMs: 800,
@@ -163,7 +168,10 @@ const TranscriberPolicy = {
   /**
    * iOS は発話ごとに onend があり、desktop より早く「止まった」ように見える。
    */
-  iosCaptionStaleMs: 3200,
+  iosCaptionStaleMs: 4200,
+
+  /** 自動 revive の最短間隔（再開ボタンなし運用） */
+  iosAutoReviveMs: 900,
 
   /** iOS で「再開」を出し始めるまで（確定が動いていない時間） */
   iosResumeOfferMs: 1800,

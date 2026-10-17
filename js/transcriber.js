@@ -69,6 +69,7 @@ class Transcriber {
     this._lastCaptionChangeAt = 0;
     this._captionFingerprint = '';
     this._userResumeUntil = 0;
+    this._iosPhraseGapUntil = 0;
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
@@ -154,6 +155,7 @@ class Transcriber {
    */
   _onRecognitionStart() {
     this._engineRunning = true;
+    if (this._isIOS) this._iosPhraseGapUntil = 0;
     this._pendingStartAt = 0;
     this._clearStartAckWatch();
     this._resumeNeeded = false;
@@ -199,6 +201,7 @@ class Transcriber {
    * @private
    */
   _ingestResult(event) {
+    if (this._isIOS) this._iosPhraseGapUntil = 0;
     this.retryCount = 0;
     this._contentionRestarts = 0;
     this._captureErrorNotified = false;
@@ -403,7 +406,11 @@ class Transcriber {
     this._clearStopWatch();
     this._clearJaHungWatch();
     this._clearJaSpeechEndFlush();
-    this._commitPendingInterim();
+    if (this._isIOS) {
+      this._iosPhraseGapUntil = Date.now() + Transcriber.iosPhraseGapMs;
+    } else {
+      this._commitPendingInterim();
+    }
     if (this._hold || document.visibilityState === 'hidden') {
       if (this.shouldRestart && this.isListening) this._resumeWhenVisible = true;
       if (this.onNeedsCheckpoint) this.onNeedsCheckpoint();
@@ -714,11 +721,22 @@ class Transcriber {
   }
 
   /**
+   * iOS continuous:false の句切れ〜自動再起動中。
+   * @returns {boolean}
+   */
+  inIosPhraseGap() {
+    if (!this._isIOS) return false;
+    if (this._restartTimer) return true;
+    return !!(this._iosPhraseGapUntil && Date.now() < this._iosPhraseGapUntil);
+  }
+
+  /**
    * onstart だけ立って onresult / 暫定が来ない（マイク取り合い後に多い）。
    * @returns {boolean}
    */
   isZombieEngine() {
     if (!this._engineRunning || !this.shouldRestart || !this.isListening) return false;
+    if (this.inIosPhraseGap()) return false;
     if ((this.interimTranscript || '').trim()) return false;
     const ms = this.msSinceResult();
     const sinceEngine = this._sessionStartedAt ? Date.now() - this._sessionStartedAt : ms;
@@ -758,20 +776,7 @@ class Transcriber {
    * @returns {boolean}
    */
   shouldShowManualResume() {
-    if (!this.shouldRestart || !this.isListening) return false;
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
-    if (this.inUserResumeGrace()) {
-      if (this._resumeNeeded) return true;
-      if (this.isZombieEngine() || this.isCaptionStalled()) return true;
-      if (this.awaitingStartAck()) return false;
-      if (this._engineRunning) return false;
-    }
-    if (this._resumeNeeded || this._resumeWhenVisible) return true;
-    if (this._hold) return this.isCaptionStalled();
-    const msStill = this.msSinceCaptionChange();
-    if (this._isIOS && this._gotHypothesis && msStill >= Transcriber.iosResumeOfferMs) return true;
-    if (this._gotHypothesis && msStill >= this._captionStaleThresholdMs()) return true;
-    return this.needsResume() || this.isCaptionStalled();
+    return false;
   }
 
   needsResume() {
@@ -804,6 +809,7 @@ class Transcriber {
    */
   isCaptionStalled() {
     if (!this.shouldRestart || !this.isListening) return false;
+    if (this.inIosPhraseGap()) return false;
     if (this._hold && typeof document !== 'undefined' && document.visibilityState === 'visible') {
       return this.msSinceResult() >= Transcriber.captionBootMs;
     }
@@ -838,15 +844,12 @@ class Transcriber {
    */
   reviveLiveCaption() {
     if (!this.shouldRestart || !this.isListening) return false;
-    if (this._resumeNeeded || this.inUserResumeGrace()) return false;
     if (!this.isCaptionStalled()) return false;
-    if (this._lastReviveAt && Date.now() - this._lastReviveAt < 2500) return false;
-    if (this._stallReviveCount >= Transcriber.manualResumeAfterRevives) {
-      this._signalResumeNeeded();
-      return false;
-    }
+    const minGap = this._isIOS ? Transcriber.iosAutoReviveMs : 2000;
+    if (this._lastReviveAt && Date.now() - this._lastReviveAt < minGap) return false;
     this._lastReviveAt = Date.now();
     this._stallReviveCount++;
+    this._resumeNeeded = false;
 
     if (!this._engineRunning) {
       this._clearRestartTimer();
@@ -855,13 +858,9 @@ class Transcriber {
     }
 
     if (this._isIOS) {
+      if (this.inIosPhraseGap()) return false;
       this._clearRestartTimer();
-      this._commitPendingInterim();
-      this.interimTranscript = '';
-      this._lastInterimAt = 0;
-      this._lastInterimNorm = '';
       this._restartNow();
-      if (this.onResult) this.onResult(this.finalTranscript, this.interimTranscript);
       return true;
     }
 
@@ -898,7 +897,8 @@ class Transcriber {
     this.isListening = true;
     this._engineRunning = false;
     this._hold = false;
-    this._signalResumeNeeded();
+    this._resumeNeeded = false;
+    this.continueListening();
   }
 
   /**
