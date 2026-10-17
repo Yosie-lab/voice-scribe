@@ -1,7 +1,7 @@
 // VoiceScribe Service Worker
 // Network-First戦略で常に最新アセットを配信
 
-const CACHE_NAME = 'voicescribe-v90';
+const CACHE_NAME = 'voicescribe-v91';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',

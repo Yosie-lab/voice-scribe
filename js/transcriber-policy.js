@@ -174,13 +174,13 @@ const TranscriberPolicy = {
   iosAutoReviveMs: 650,
 
   /** 字幕ヘルスチェック間隔（再開ボタンなし運用） */
-  captionHealthPollMs: 300,
+  captionHealthPollMs: 250,
 
   /** 暫定が止まったあと付け直すまで（onstart 待ちとは別） */
   liveAttachStaleMs: 2000,
 
   /** desktop の reviveLiveCaption 最短間隔 */
-  desktopAutoReviveMs: 1400,
+  desktopAutoReviveMs: 1200,
 
   /** isZombieEngine: onstart だけ来て仮説が無い */
   zombieBootDesktopMs: 1800,

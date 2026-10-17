@@ -8,8 +8,38 @@ const VoiceScribeRecordingHealth = {
    */
   _bindLiveTranscriptCallback() {
     this.transcriber.onResult = (finalText, interimText) => {
+      if (!this.isRecording || this._userPaused) return;
       this.ui.updateTranscript(finalText, interimText, true);
     };
+  }
+,
+
+  /**
+   * 録音していないのに STT が動いていたら止める（待機画面に字幕が出ないようにする）。
+   * @private
+   */
+  _haltLiveTranscription() {
+    this._stopCaptionWatch();
+    this._stopSpeechWatch();
+    this._stopIosSttWarmup();
+    if (this._recognitionGesture) {
+      document.removeEventListener('pointerdown', this._recognitionGesture, true);
+      this._recognitionGesture = null;
+    }
+    this.transcriber.onResult = null;
+    if (this.transcriber.isListening || this.transcriber.isEngineRunning()) {
+      this.transcriber.stop();
+    }
+  }
+,
+
+  /**
+   * @private
+   */
+  _ensureLiveTranscriptionIdle() {
+    if (!this.isRecording && !this._starting) {
+      this._haltLiveTranscription();
+    }
   }
 ,
 
@@ -51,25 +81,15 @@ const VoiceScribeRecordingHealth = {
 ,
 
   /**
-   * iOS: 録音ボタン pointerdown で await より先に STT を付ける。
+   * iOS: 録音開始クリックの同期区間で STT を付ける（await より前、isRecording 確定後）。
    * @private
    */
-  _gestureKickRecognition() {
-    if (!this.transcriber.startBeforeRecorder) return;
-    if (this.isRecording || this._starting || this._stopPromise) return;
+  _kickIosRecognitionInRecordGesture() {
+    if (!this.transcriber.startBeforeRecorder || !this.isRecording) return;
     this._bindLiveTranscriptCallback();
     this.transcriber.setLanguage(this._activeLanguage());
-    if (this.transcriber.isEngineRunning()) return;
-    this._armRecognitionBootGrace();
-    try {
-      if (this.transcriber.isListening) {
-        this.transcriber.manualResumeListening(false);
-      } else {
-        this.transcriber.start();
-      }
-    } catch (error) {
-      console.warn('SpeechRecognition gesture kick:', error);
-    }
+    this._kickLiveRecognitionAtRecordStart();
+    if (this._resumePrefix) this._primeContinuedTranscript();
   }
 ,
 
@@ -126,7 +146,7 @@ const VoiceScribeRecordingHealth = {
     } catch (error) {
       console.warn('SpeechRecognition start warning:', error);
     }
-    if (!started) {
+    if (!started && this.isRecording) {
       this.transcriber.armResume();
     }
     this._primeContinuedTranscript();

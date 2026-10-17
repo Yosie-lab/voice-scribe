@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v90';
+const APP_BUILD = 'v91';
 
 class VoiceScribeApp {
   constructor() {
@@ -96,6 +96,8 @@ class VoiceScribeApp {
       this._setupListView();
       this._setupDetailView();
 
+      this._haltLiveTranscription();
+
       // 音声認識対応状況の確認
       this._checkTranscriptionSupport();
 
@@ -145,10 +147,6 @@ class VoiceScribeApp {
     // 録音開始/停止ボタン
     const recordBtn = document.getElementById('record-btn');
     if (recordBtn) {
-      recordBtn.addEventListener('pointerdown', () => {
-        if (this.isRecording || this._stopPromise) return;
-        this._gestureKickRecognition();
-      }, true);
       recordBtn.addEventListener('click', () => this._toggleRecording());
     }
 
@@ -273,12 +271,6 @@ class VoiceScribeApp {
       this._resumePrefix = '';
     }
 
-    const recognitionFirst = this.transcriber.startBeforeRecorder;
-    if (recognitionFirst) {
-      this._kickLiveRecognitionAtRecordStart();
-      if (this._resumePrefix) this._primeContinuedTranscript();
-    }
-
     this._restoreLockCheckpoint().then((restored) => {
       if (restored) this._rememberDraft(restored);
     }).catch(() => {});
@@ -348,6 +340,8 @@ class VoiceScribeApp {
       placeholderEl.style.display = 'none';
     }
 
+    this._kickIosRecognitionInRecordGesture();
+
     let stream = null;
     try {
       stream = await this.recorder.start({
@@ -361,6 +355,18 @@ class VoiceScribeApp {
       this._bootstrapLiveTranscriptionAfterMic();
     } catch (recErr) {
       console.warn('MediaRecorder start warning:', recErr);
+      if (!stream) {
+        this.isRecording = false;
+        this._userPaused = false;
+        this._stopTimer();
+        this.ui.setRecordingStatus('standby');
+        this._haltLiveTranscription();
+        document.querySelectorAll('.lang-btn').forEach((btn) => {
+          btn.style.pointerEvents = '';
+          btn.style.opacity = '';
+        });
+        return;
+      }
     }
 
     if (!this.isRecording) return;
@@ -387,6 +393,7 @@ class VoiceScribeApp {
     this.ui.showToast(prior ? '🎙️ 続きを録音中' : '🎙️ 録音中（お話しください）', 'success', 2000);
     } finally {
       this._starting = false;
+      this._ensureLiveTranscriptionIdle();
     }
   }
 
@@ -432,7 +439,7 @@ class VoiceScribeApp {
     const peeked = this.recorder.peekBlob();
     // stop() が onstop を待って固まっても、先に同じ ID へ書いて UI を戻す。
     this._checkpointRecording({ force: true });
-    this.transcriber.stop();
+    this._haltLiveTranscription();
 
     let newTake = peeked.blob;
     let audioMime = peeked.mimeType || this._priorMime || 'audio/mp4';
@@ -640,7 +647,10 @@ class VoiceScribeApp {
   _bindRecordingLifecycle() {
     const onHide = () => this._onRecordingHidden();
     const onShow = () => {
-      if (!this.isRecording) this._syncViewportHeight();
+      if (!this.isRecording) {
+        this._syncViewportHeight();
+        this._ensureLiveTranscriptionIdle();
+      }
       this._scheduleForegroundWork();
     };
     document.addEventListener('visibilitychange', () => {
@@ -842,7 +852,7 @@ class VoiceScribeApp {
       '・<b>横画面</b>にする: コントロールセンター → 「画面の向きをロック」を OFF にしてから端末を横に。<br>',
       '・<b>ホーム画面</b>から起動している場合: アイコンを削除 → Safari で ',
       '<a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener">yosie-lab.github.io/voice-scribe</a>',
-      ' を開く → ⚙️ でビルド v90 を確認 → 共有 → ホーム画面に追加。',
+      ' を開く → ⚙️ でビルド v91 を確認 → 共有 → ホーム画面に追加。',
       '<br>今朝のアップデートで向きがおかしくなった場合も、上と同じ手順で古いホーム画面アイコンを消してください。'
     ].join('');
   }
@@ -1531,7 +1541,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=90');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=91');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();
