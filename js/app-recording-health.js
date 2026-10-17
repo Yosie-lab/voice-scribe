@@ -44,6 +44,31 @@ const VoiceScribeRecordingHealth = {
 ,
 
   /**
+   * onstart 待ち・iOS 句切れなど、付け直しを抑える区間。
+   * @param {Transcriber} t
+   * @returns {boolean}
+   * @private
+   */
+  _liveRecoveryBlocked(t) {
+    if (!t) return true;
+    if (t.inIosPhraseGap && t.inIosPhraseGap()) return true;
+    if (t.awaitingStartAck() && !t.isZombieEngine()) return true;
+    if (t.inUserResumeGrace() && !t.isZombieEngine() && !t.isCaptionStalled()) return true;
+    return false;
+  }
+,
+
+  /**
+   * @param {Transcriber} t
+   * @returns {boolean}
+   * @private
+   */
+  _needsDeadEngineRevive(t) {
+    return t.isCaptionStalled() && (t.isZombieEngine() || !t.isEngineRunning());
+  }
+,
+
+  /**
    * 続き録音の接頭辞をメモリ上の下書きから先に組み立てる（await 前）。
    * @private
    */
@@ -702,16 +727,12 @@ const VoiceScribeRecordingHealth = {
       });
       return;
     }
-    if (t.inIosPhraseGap && t.inIosPhraseGap()) return;
-    if (t.awaitingStartAck() && !t.isZombieEngine()) return;
-    if (t.inUserResumeGrace() && !t.isZombieEngine() && !t.isCaptionStalled()) return;
+    if (this._liveRecoveryBlocked(t)) return;
 
     if (t._resumeNeeded) t._resumeNeeded = false;
-    if (t.isZombieEngine()) {
+    if (t.isZombieEngine() || !t.isEngineRunning()) {
       this._reattachLiveSttAfterMic();
-    } else if (!t.isEngineRunning()) {
-      this._reattachLiveSttAfterMic();
-    } else if (t.isCaptionStalled() && (t.isZombieEngine() || !t.isEngineRunning())) {
+    } else if (this._needsDeadEngineRevive(t)) {
       t.reviveLiveCaption();
     } else if (t.needsResume()) {
       t.continueListening();
@@ -799,7 +820,7 @@ const VoiceScribeRecordingHealth = {
       && !t.awaitingStartAck()) {
       this._reattachLiveSttAfterMic();
     }
-    if (t.isCaptionStalled() && (t.isZombieEngine() || !t.isEngineRunning())) {
+    if (this._needsDeadEngineRevive(t)) {
       t.reviveLiveCaption();
     }
   }

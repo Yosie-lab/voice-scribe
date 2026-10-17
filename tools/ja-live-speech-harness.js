@@ -591,7 +591,8 @@ const sw = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'css/style.css'), 'utf8');
 const app = [
   'app.js',
-  'app-recording-health.js'
+  'app-recording-health.js',
+  'app-recording-session.js'
 ].map((name) => fs.readFileSync(path.join(root, 'js', name), 'utf8')).join('\n');
 const transcriberSrc = [
   'transcriber-policy.js',
@@ -607,13 +608,16 @@ assert(!index.includes('v=82'), 'index cache bust left 82');
 assert(!index.includes('v=81'), 'index cache bust left 81');
 assert(!index.includes('v=80'), 'index cache bust left 80');
 assert(!index.includes('v=79'), 'index cache bust left 79');
-assert(!index.includes('v=93'), 'index cache bust left 93');
-assert(index.includes('v=94'), 'index is v94');
+assert(!index.includes('v=94'), 'index cache bust left 94');
+assert(index.includes('v=95'), 'index is v95');
 assert(index.includes('transcriber-policy.js'), 'transcriber policy module is loaded');
 assert(index.includes('transcriber-ja-text.js'), 'transcriber ja text module is loaded');
 assert(index.includes('app-recording-health.js'), 'app recording health module is loaded');
-assert(sw.includes("voicescribe-v94"), 'sw cache name');
-assert(!sw.includes('voicescribe-v93'), 'old sw name gone');
+assert(index.includes('app-recording-session.js'), 'app recording session module is loaded');
+assert(app.includes('_finalizeTranscriptWithWhisper'), 'whisper finish lives in session mixin');
+assert(app.includes('_liveRecoveryBlocked'), 'live recovery guard is shared');
+assert(sw.includes("voicescribe-v95"), 'sw cache name');
+assert(!sw.includes('voicescribe-v94'), 'old sw name gone');
 assert(Transcriber.stallAutoRestartMs === 1800, 'dead-engine restart gap');
 assert(Transcriber.captionStaleMs === 3200, 'desktop stall detect avoids cutting live engine');
 assert(Transcriber.iosCaptionStaleMs === 3000, 'ios stall detect');
@@ -635,7 +639,7 @@ assert(manifest.includes('"id": "./"'), 'manifest id stays stable for iOS home s
 assert(!app.includes('navigator.wakeLock.request'), 'wake lock does not block device lock');
 assert(!app.includes('screen.orientation.unlock'), 'no orientation unlock calls on iOS');
 assert(app.includes('_syncViewportHeight'), 'viewport resync on rotate for iOS Safari');
-assert(app.includes("APP_BUILD = 'v94'"), 'app build tag is v94');
+assert(app.includes("APP_BUILD = 'v95'"), 'app build tag is v95');
 assert(index.includes('文字起こしの二段構え'), 'settings explain two-phase STT');
 assert(transcriberSrc.includes('msSinceCaptionChange'), 'stall uses caption content time');
 assert(transcriberSrc.includes('polishJaCommitted'), 'long ja repeats are polished');
@@ -651,7 +655,7 @@ assert(app.includes('_stageDraftFromStop'), 'stop shows draft play before save f
 assert(transcriberSrc.includes('jaOverlapMax'), 'long ja overlap cap is named');
 assert(transcriberSrc.includes('collapseAdjacentJaRepeats'), 'adjacent ja repeats collapse after commit');
 assert(app.includes('app-ios-rotation-hint'), 'settings explain iPhone rotation limits');
-assert(app.includes('sw.js?v=94'), 'service worker registration is cache-busted');
+assert(app.includes('sw.js?v=95'), 'service worker registration is cache-busted');
 assert(transcriberSrc.includes('stallAutoRestartMs'), 'revive uses unified stall restart ms');
 assert(!app.includes('onListeningChange'), 'listening change does not feedback auto-recover');
 assert(transcriberSrc.includes('isZombieEngine'), 'zombie onstart without captions is detectable');
