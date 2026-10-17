@@ -13,13 +13,13 @@
   <title>VoiceScribe — 文字起こしボイスレコーダー</title>
 
   <!-- PWAマニフェスト -->
-  <link rel="manifest" href="manifest.json?v=93">
+  <link rel="manifest" href="manifest.json?v=94">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" sizes="192x192" href="icons/icon-192.png">
   <link rel="apple-touch-icon" sizes="512x512" href="icons/icon-512.png">
 
   <!-- スタイルシート -->
-  <link rel="stylesheet" href="css/style.css?v=93">
+  <link rel="stylesheet" href="css/style.css?v=94">
 
   <!-- ファビコン -->
   <link rel="icon" href="icons/icon-192.png" type="image/png">
@@ -252,7 +252,7 @@
               <button class="settings-toggle-visibility-btn" id="toggle-key-visibility-btn" title="表示/非表示">👁️</button>
             </div>
             <p class="settings-hint">
-              Groq Cloud で無料取得できるAPIキーを登録すると、録音停止時に<b>録音された音声を0.5秒で一言一句漏らさず完璧に文字起こし</b>します。
+              <b>録音停止後の仕上げ</b>用です（録音中のライブ字幕には使いません）。キーを登録すると、停止した音声を Groq Whisper で高精度に全文化し、ライブ字幕を置き換えます。
             </p>
             <a href="https://console.groq.com/keys" target="_blank" rel="noopener" class="settings-link">
               👉 Groq Cloud で無料APIキーを取得（カード不要）
@@ -288,9 +288,10 @@
           <div class="settings-section">
             <p class="settings-hint" id="app-build-info">アプリ情報を読み込み中…</p>
             <p class="settings-hint" id="app-live-stt-hint">
-              <b>リアルタイム文字起こしについて</b><br>
-              ブラウザ内蔵の音声認識（Web Speech API）を使っています。音量メーターの感度は「認識が死んだか」の検知用で、聞き取り精度そのものは <b>PC の Chrome</b> や <b>iPhone の Safari（ホーム画面追加）</b>・マイク許可・静かな環境のほうが左右します。<br>
-              録音ボタンを押してから話してください。途中で止まったら、黙りすぎず続けて話すか、一度停止して録り直すのが確実です。
+              <b>文字起こしの二段構え</b><br>
+              ① <b>録音中</b> … ブラウザの Web Speech API（APIキー不要）でリアルタイム表示<br>
+              ② <b>録音停止後</b> … Groq API キーがあるときだけ Whisper で仕上げ（上のキー設定）<br>
+              ライブは <b>PC Chrome</b> または <b>iPhone Safari（ホーム画面追加）</b> がおすすめです。録音開始を押してから話してください。
             </p>
             <p class="settings-hint" id="app-ios-rotation-hint" style="display:none;"></p>
           </div>
@@ -321,16 +322,16 @@
   </div>
 
   <!-- ===== JavaScript モジュール ===== -->
-  <script src="js/storage.js?v=93"></script>
-  <script src="js/recorder.js?v=93"></script>
-  <script src="js/transcriber-policy.js?v=93"></script>
-  <script src="js/transcriber-ja-text.js?v=93"></script>
-  <script src="js/transcriber.js?v=93"></script>
-  <script src="js/whisper.js?v=93"></script>
-  <script src="js/visualizer.js?v=93"></script>
-  <script src="js/obsidian.js?v=93"></script>
-  <script src="js/ui.js?v=93"></script>
-  <script src="js/app-recording-health.js?v=93"></script>
-  <script src="js/app.js?v=93"></script>
+  <script src="js/storage.js?v=94"></script>
+  <script src="js/recorder.js?v=94"></script>
+  <script src="js/transcriber-policy.js?v=94"></script>
+  <script src="js/transcriber-ja-text.js?v=94"></script>
+  <script src="js/transcriber.js?v=94"></script>
+  <script src="js/whisper.js?v=94"></script>
+  <script src="js/visualizer.js?v=94"></script>
+  <script src="js/obsidian.js?v=94"></script>
+  <script src="js/ui.js?v=94"></script>
+  <script src="js/app-recording-health.js?v=94"></script>
+  <script src="js/app.js?v=94"></script>
 </body>
 </html>
