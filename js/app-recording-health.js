@@ -60,6 +60,7 @@ const VoiceScribeRecordingHealth = {
     this._bindLiveTranscriptCallback();
     this.transcriber.setLanguage(this._activeLanguage());
     if (this.transcriber.isEngineRunning()) return;
+    this._armRecognitionBootGrace();
     try {
       if (this.transcriber.isListening) {
         this.transcriber.manualResumeListening(false);
@@ -106,7 +107,13 @@ const VoiceScribeRecordingHealth = {
    * 録音開始時に認識を付ける（ジェスチャ先走り後の二重 start を避ける）。
    * @private
    */
+  _armRecognitionBootGrace() {
+    this.transcriber._userResumeUntil = Date.now() + 12000;
+  }
+,
+
   _kickLiveRecognitionAtRecordStart() {
+    if (this.transcriber.startBeforeRecorder) this._armRecognitionBootGrace();
     let started = false;
     try {
       if (this.transcriber.isEngineRunning()) {
@@ -675,8 +682,14 @@ const VoiceScribeRecordingHealth = {
       });
       return;
     }
+    if (t.inIosPhraseGap && t.inIosPhraseGap()) return;
+    if (t.awaitingStartAck() && !t.isZombieEngine()) return;
+    if (t.inUserResumeGrace() && !t.isZombieEngine() && !t.isCaptionStalled()) return;
+
     if (t._resumeNeeded) t._resumeNeeded = false;
-    if (t.isZombieEngine() || !t.isEngineRunning()) {
+    if (t.isZombieEngine()) {
+      this._reattachLiveSttAfterMic();
+    } else if (!t.isEngineRunning()) {
       this._reattachLiveSttAfterMic();
     } else if (t.isCaptionStalled()) {
       t.reviveLiveCaption();
@@ -713,18 +726,28 @@ const VoiceScribeRecordingHealth = {
    */
   _ensureLiveRecognition() {
     if (!this.isRecording || this._userPaused) return;
+    const t = this.transcriber;
+    if (t.inUserResumeGrace()) {
+      if (t.isZombieEngine() || t.isCaptionStalled()) {
+        this._reattachLiveSttAfterMic();
+      } else if (t.awaitingStartAck() || t.isEngineRunning()) {
+        return;
+      }
+    }
     if (this.recorder && this.recorder.state === 'recording') {
-      const live = this.transcriber.isEngineRunning();
-      const interim = (this.transcriber.interimTranscript || '').trim();
-      const stale = this.transcriber.msSinceResult() > 2500;
+      const live = t.isEngineRunning();
+      const interim = (t.interimTranscript || '').trim();
+      const stale = t.msSinceResult() > 2500;
       if (!live || (stale && !interim)) {
+        if (t.awaitingStartAck() && !t.isZombieEngine()) return;
+        if (t.inIosPhraseGap && t.inIosPhraseGap()) return;
         this._reattachLiveSttAfterMic();
         return;
       }
     }
-    if (this.transcriber.awaitingStartAck()) return;
-    if (this.transcriber.isEngineRunning() && !this.transcriber.isCaptionStalled()) return;
-    if (this.transcriber.needsResume()) this.transcriber.continueListening();
+    if (t.awaitingStartAck()) return;
+    if (t.isEngineRunning() && !t.isCaptionStalled()) return;
+    if (t.needsResume()) t.continueListening();
   }
 ,
 
@@ -734,16 +757,33 @@ const VoiceScribeRecordingHealth = {
    */
   _checkCaptionHealth() {
     if (!this.isRecording || this._userPaused || document.visibilityState === 'hidden') return;
-    if (this.transcriber._hold) {
-      this.transcriber.resumeAfterBackground();
-    } else if (this.transcriber._resumeWhenVisible && !this.transcriber.isEngineRunning()) {
-      this.transcriber.resumeAfterBackground();
+    const t = this.transcriber;
+    if (t._hold) {
+      t.resumeAfterBackground();
+    } else if (t._resumeWhenVisible && !t.isEngineRunning()) {
+      t.resumeAfterBackground();
     }
-    if (!this.transcriber.isListening) {
-      this.transcriber.shouldRestart = true;
-      this.transcriber.isListening = true;
+    if (!t.isListening) {
+      t.shouldRestart = true;
+      t.isListening = true;
     }
-    this._autoRecoverLiveStt();
+    if (this.recorder && this.recorder.needsRecovery()) {
+      this._autoRecoverLiveStt();
+      return;
+    }
+    if (t.inUserResumeGrace()) {
+      if (t.isZombieEngine() || t.isCaptionStalled()) {
+        t.reattachAfterSharedMic({ micContended: true });
+      }
+      return;
+    }
+    if (this.recorder && this.recorder.state === 'recording' && !t.isEngineRunning()
+      && !t.awaitingStartAck()) {
+      this._reattachLiveSttAfterMic();
+    }
+    if (t.isCaptionStalled()) {
+      t.reviveLiveCaption();
+    }
   }
 ,
 
