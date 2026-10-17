@@ -412,8 +412,8 @@ record(
 assert(Transcriber.restartDelay('no-speech', false, 'en-US') === 25, 'en no-speech');
 assert(Transcriber.restartDelay('end', false, 'en-US') === 35, 'en end');
 assert(Transcriber.restartDelay('stall', false, 'en-US') === 30, 'en stall');
-assert(Transcriber.restartDelay('no-speech', true, 'ja-JP') === 70, 'ios no-speech');
-assert(Transcriber.restartDelay('end', true, 'ja-JP') === 90, 'ios end');
+assert(Transcriber.restartDelay('no-speech', true, 'ja-JP') === 55, 'ios no-speech');
+assert(Transcriber.restartDelay('end', true, 'ja-JP') === 75, 'ios end');
 assert(Transcriber.restartDelay('no-speech', false, 'ja-JP') === 25, 'ja no-speech matches english');
 assert(Transcriber.restartDelay('end', false, 'ja-JP') === 35, 'ja end matches english');
 assert(
@@ -591,8 +591,15 @@ const root = path.join(__dirname, '..');
 const index = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const sw = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'css/style.css'), 'utf8');
-const app = fs.readFileSync(path.join(root, 'js/app.js'), 'utf8');
-const transcriberSrc = fs.readFileSync(path.join(root, 'js/transcriber.js'), 'utf8');
+const app = [
+  'app.js',
+  'app-recording-health.js'
+].map((name) => fs.readFileSync(path.join(root, 'js', name), 'utf8')).join('\n');
+const transcriberSrc = [
+  'transcriber-policy.js',
+  'transcriber-ja-text.js',
+  'transcriber.js'
+].map((name) => fs.readFileSync(path.join(root, 'js', name), 'utf8')).join('\n');
 const viz = fs.readFileSync(path.join(root, 'js/visualizer.js'), 'utf8');
 assert(viz.includes('getSpeechPeak'), 'frame peak for short bursts');
 assert(viz.includes('_sampleSpeechPeak'), 'peak is sampled while drawing');
@@ -602,9 +609,13 @@ assert(!index.includes('v=82'), 'index cache bust left 82');
 assert(!index.includes('v=81'), 'index cache bust left 81');
 assert(!index.includes('v=80'), 'index cache bust left 80');
 assert(!index.includes('v=79'), 'index cache bust left 79');
-assert(index.includes('v=90'), 'index is v90');
-assert(sw.includes("voicescribe-v90"), 'sw cache name');
-assert(!app.includes('_gestureKickRecognition'), 'record does not pre-start STT on pointerdown');
+assert(index.includes('v=87'), 'index is v87');
+assert(index.includes('transcriber-policy.js'), 'transcriber policy module is loaded');
+assert(index.includes('transcriber-ja-text.js'), 'transcriber ja text module is loaded');
+assert(index.includes('app-recording-health.js'), 'app recording health module is loaded');
+assert(sw.includes("voicescribe-v87"), 'sw cache name');
+assert(app.includes('_gestureKickRecognition'), 'iOS record pointerdown pre-starts STT');
+assert(app.includes('_scheduleIosPostMicWarmup'), 'iOS delayed mic warmup reattach');
 assert(app.includes('_kickLiveRecognitionAtRecordStart'), 'record start kicks STT once');
 assert(!sw.includes('voicescribe-v82'), 'old sw name gone');
 const manifest = fs.readFileSync(path.join(root, 'manifest.json'), 'utf8');
@@ -614,7 +625,7 @@ assert(manifest.includes('"id": "./"'), 'manifest id stays stable for iOS home s
 assert(!app.includes('navigator.wakeLock.request'), 'wake lock does not block device lock');
 assert(!app.includes('screen.orientation.unlock'), 'no orientation unlock calls on iOS');
 assert(app.includes('_syncViewportHeight'), 'viewport resync on rotate for iOS Safari');
-assert(app.includes("APP_BUILD = 'v90'"), 'app build tag is v90');
+assert(app.includes("APP_BUILD = 'v87'"), 'app build tag is v87');
 assert(transcriberSrc.includes('msSinceCaptionChange'), 'stall uses caption content time');
 assert(transcriberSrc.includes('polishJaCommitted'), 'long ja repeats are polished');
 assert(css.includes('caption-stalled-recording'), 'stalled recording forces resume visible');
@@ -628,7 +639,11 @@ assert(app.includes('_stageDraftFromStop'), 'stop shows draft play before save f
 assert(transcriberSrc.includes('jaOverlapMax'), 'long ja overlap cap is named');
 assert(transcriberSrc.includes('collapseAdjacentJaRepeats'), 'adjacent ja repeats collapse after commit');
 assert(app.includes('app-ios-rotation-hint'), 'settings explain iPhone rotation limits');
-assert(app.includes('sw.js?v=90'), 'service worker registration is cache-busted');
+assert(app.includes('sw.js?v=87'), 'service worker registration is cache-busted');
+assert(transcriberSrc.includes('inIosPhraseGap'), 'iOS phrase gap skips stall reattach');
+assert(transcriberSrc.includes('iosPhraseGapMs'), 'iOS phrase gap window is named');
+assert(transcriberSrc.includes('isZombieEngine'), 'zombie onstart without captions is detectable');
+assert(app.includes('isZombieEngine()'), 'app reattaches when recognition is zombie');
 assert(transcriberSrc.includes('_cleanLiveInterim'), 'interim repeat uses the commit dedupe window');
 assert(transcriberSrc.includes('setContinuedPrefix'), 'resume prefix is excluded from dedupe anchor');
 assert(transcriberSrc.includes('iosCaptionBootMs'), 'ios waits longer before caption stall revive');
@@ -783,11 +798,11 @@ assert(gapRestarted === false, 'preempted restart did not run');
 
 const startFn = app.slice(app.indexOf('async _startRecording'), app.indexOf('async _stopRecording'));
 const recorderAt = startFn.indexOf('this.recorder.start');
-const desktopStart = startFn.indexOf('this.transcriber.start', recorderAt);
-const iosStart = startFn.lastIndexOf('this.transcriber.start', recorderAt);
-assert(iosStart !== -1 && iosStart < recorderAt, 'iOS recognition stays before recorder');
-assert(desktopStart > recorderAt, 'desktop recognition stays after recorder');
-assert(startFn.includes('if (!recognitionFirst)'), 'desktop path is gated');
+const bootstrapAt = startFn.indexOf('_bootstrapLiveTranscriptionAfterMic');
+assert(recorderAt !== -1 && bootstrapAt > recorderAt, 'STT bootstrap runs right after mic open');
+assert(startFn.indexOf('if (recognitionFirst)') !== -1, 'iOS pre-mic STT kick in user gesture');
+assert(transcriberSrc.includes('get startBeforeRecorder') && transcriberSrc.includes('return this._isIOS'), 'iOS starts STT before mic, desktop after');
+assert(app.includes('_scheduleIosPostMicWarmup'), 'iOS post-mic warmup when captions stay empty');
 
 function countSpan(text, span) {
   const norm = (text || '').replace(/[。、！？!?\s\u3000]/g, '');
