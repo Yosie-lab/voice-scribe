@@ -591,8 +591,15 @@ const root = path.join(__dirname, '..');
 const index = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const sw = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'css/style.css'), 'utf8');
-const app = fs.readFileSync(path.join(root, 'js/app.js'), 'utf8');
-const transcriberSrc = fs.readFileSync(path.join(root, 'js/transcriber.js'), 'utf8');
+const app = [
+  'app.js',
+  'app-recording-health.js'
+].map((name) => fs.readFileSync(path.join(root, 'js', name), 'utf8')).join('\n');
+const transcriberSrc = [
+  'transcriber-policy.js',
+  'transcriber-ja-text.js',
+  'transcriber.js'
+].map((name) => fs.readFileSync(path.join(root, 'js', name), 'utf8')).join('\n');
 const viz = fs.readFileSync(path.join(root, 'js/visualizer.js'), 'utf8');
 assert(viz.includes('getSpeechPeak'), 'frame peak for short bursts');
 assert(viz.includes('_sampleSpeechPeak'), 'peak is sampled while drawing');
@@ -603,6 +610,9 @@ assert(!index.includes('v=81'), 'index cache bust left 81');
 assert(!index.includes('v=80'), 'index cache bust left 80');
 assert(!index.includes('v=79'), 'index cache bust left 79');
 assert(index.includes('v=85'), 'index is v85');
+assert(index.includes('transcriber-policy.js'), 'transcriber policy module is loaded');
+assert(index.includes('transcriber-ja-text.js'), 'transcriber ja text module is loaded');
+assert(index.includes('app-recording-health.js'), 'app recording health module is loaded');
 assert(sw.includes("voicescribe-v85"), 'sw cache name');
 assert(!app.includes('_gestureKickRecognition'), 'record does not pre-start STT on pointerdown');
 assert(app.includes('_kickLiveRecognitionAtRecordStart'), 'record start kicks STT once');
