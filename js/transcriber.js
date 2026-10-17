@@ -69,7 +69,6 @@ class Transcriber {
     this._lastCaptionChangeAt = 0;
     this._captionFingerprint = '';
     this._userResumeUntil = 0;
-    this._iosPhraseGapUntil = 0;
 
     // コールバック
     this.onResult = null; // (finalText, interimText) => {}
@@ -155,7 +154,6 @@ class Transcriber {
    */
   _onRecognitionStart() {
     this._engineRunning = true;
-    if (this._isIOS) this._iosPhraseGapUntil = 0;
     this._pendingStartAt = 0;
     this._clearStartAckWatch();
     this._resumeNeeded = false;
@@ -201,7 +199,6 @@ class Transcriber {
    * @private
    */
   _ingestResult(event) {
-    if (this._isIOS) this._iosPhraseGapUntil = 0;
     this.retryCount = 0;
     this._contentionRestarts = 0;
     this._captureErrorNotified = false;
@@ -406,12 +403,7 @@ class Transcriber {
     this._clearStopWatch();
     this._clearJaHungWatch();
     this._clearJaSpeechEndFlush();
-    if (this._isIOS) {
-      this._iosPhraseGapUntil = Date.now() + Transcriber.iosPhraseGapMs;
-      // 句切れ onend で暫定を確定にしない。再起動後の同文 final 再送で繰り返しやすい。
-    } else {
-      this._commitPendingInterim();
-    }
+    this._commitPendingInterim();
     if (this._hold || document.visibilityState === 'hidden') {
       if (this.shouldRestart && this.isListening) this._resumeWhenVisible = true;
       if (this.onNeedsCheckpoint) this.onNeedsCheckpoint();
@@ -722,22 +714,11 @@ class Transcriber {
   }
 
   /**
-   * iOS continuous:false の句切れ〜自動再起動中。ここで stall / reattach しない。
-   * @returns {boolean}
-   */
-  inIosPhraseGap() {
-    if (!this._isIOS) return false;
-    if (this._restartTimer) return true;
-    return !!(this._iosPhraseGapUntil && Date.now() < this._iosPhraseGapUntil);
-  }
-
-  /**
    * onstart だけ立って onresult / 暫定が来ない（マイク取り合い後に多い）。
    * @returns {boolean}
    */
   isZombieEngine() {
     if (!this._engineRunning || !this.shouldRestart || !this.isListening) return false;
-    if (this.inIosPhraseGap()) return false;
     if ((this.interimTranscript || '').trim()) return false;
     const ms = this.msSinceResult();
     const sinceEngine = this._sessionStartedAt ? Date.now() - this._sessionStartedAt : ms;
@@ -823,7 +804,6 @@ class Transcriber {
    */
   isCaptionStalled() {
     if (!this.shouldRestart || !this.isListening) return false;
-    if (this.inIosPhraseGap()) return false;
     if (this._hold && typeof document !== 'undefined' && document.visibilityState === 'visible') {
       return this.msSinceResult() >= Transcriber.captionBootMs;
     }
@@ -875,9 +855,13 @@ class Transcriber {
     }
 
     if (this._isIOS) {
-      if (this.inIosPhraseGap()) return false;
       this._clearRestartTimer();
+      this._commitPendingInterim();
+      this.interimTranscript = '';
+      this._lastInterimAt = 0;
+      this._lastInterimNorm = '';
       this._restartNow();
+      if (this.onResult) this.onResult(this.finalTranscript, this.interimTranscript);
       return true;
     }
 
@@ -1504,16 +1488,6 @@ class Transcriber {
     const nextNorm = this._normalize(next);
     if (!nextNorm) return;
     const mergeMs = this.language === 'ja-JP' ? 2200 : 1600;
-    const sinceChunk = now - (this._lastChunkAt || 0);
-
-    if (this._isIOS && this.language === 'ja-JP') {
-      const interNorm = this._normalize(this.interimTranscript);
-      if (interNorm && interNorm === nextNorm && sinceChunk < Transcriber.repeatWindowMs) {
-        this.interimTranscript = '';
-        this._dropRepeated(nextNorm, now);
-        return;
-      }
-    }
 
     // 同じ句の連続、および再起動で再送された窓内の同一句。2200ms では grace / stale stop に届かない。
     if (nextNorm && this._isRepeatedCommit(nextNorm, now)) {
