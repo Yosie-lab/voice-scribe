@@ -597,6 +597,7 @@ class Transcriber {
    * @returns {boolean}
    */
   continueListening() {
+    if (this.awaitingStartAck()) return true;
     return this.manualResumeListening(false);
   }
 
@@ -609,6 +610,16 @@ class Transcriber {
   }
 
   /**
+   * start() 済みで onstart 待ち。字幕が古くても、この間は needsResume で init しない。
+   * @returns {boolean}
+   */
+  awaitingStartAck() {
+    if (!this._pendingStartAt) return false;
+    const ackMs = this._isIOS ? Transcriber.iosStartAckMs : Transcriber.startAckMs;
+    return Date.now() - this._pendingStartAt < ackMs;
+  }
+
+  /**
    * ユーザタップで認識を付け直す。await より先に呼ぶ。ゾンビ engine も止めてから start する。
    * @param {boolean} [fromUserTap]
    * @returns {boolean}
@@ -616,6 +627,7 @@ class Transcriber {
   manualResumeListening(fromUserTap = true) {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return false;
+    if (!fromUserTap && this.awaitingStartAck()) return true;
     this.shouldRestart = true;
     this.isListening = true;
     this._hold = false;
@@ -696,6 +708,10 @@ class Transcriber {
   shouldShowManualResume() {
     if (!this.shouldRestart || !this.isListening) return false;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    if (this.inUserResumeGrace()) {
+      if (this._resumeNeeded) return true;
+      if (this.awaitingStartAck() || this._engineRunning) return false;
+    }
     if (this._resumeNeeded || this._resumeWhenVisible) return true;
     if (this._hold) return this.isCaptionStalled();
     const msStill = this.msSinceCaptionChange();
@@ -707,17 +723,16 @@ class Transcriber {
   needsResume() {
     if (!this.shouldRestart || !this.isListening) return false;
     if (this._hold) {
+      if (this.awaitingStartAck()) return false;
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
         return this.isCaptionStalled() || this._resumeNeeded || this._resumeWhenVisible;
       }
       return false;
     }
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    if (this.awaitingStartAck()) return false;
     const msResult = this.msSinceResult();
     const stale = msResult >= this._captionStaleThresholdMs();
-    if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs && !stale) {
-      return false;
-    }
     if (this._restartTimer && !stale) return false;
     if (this._resumeNeeded) return true;
     if (this.isCaptionStalled()) return true;
@@ -739,12 +754,10 @@ class Transcriber {
     }
     if (this._hold) return false;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    if (this.awaitingStartAck()) return false;
     const staleMs = this._captionStaleThresholdMs();
     const msResult = this.msSinceResult();
     const stale = msResult >= staleMs;
-    if (this._pendingStartAt && Date.now() - this._pendingStartAt < Transcriber.startAckMs && !stale) {
-      return false;
-    }
     if (this._restartTimer && !stale) return false;
 
     const interim = (this.interimTranscript || '').trim();
@@ -897,9 +910,10 @@ class Transcriber {
     if (this._restartNotBefore && now < this._restartNotBefore) return false;
     if (this._lastNudgeAt && now - this._lastNudgeAt < 3000) return false;
 
+    if (this.inUserResumeGrace() && this.awaitingStartAck()) return false;
     if (!this._engineRunning) {
       // start() 直後は onstart 前。ここで init() すると desktop の初回認識が abort され字幕が空になる。
-      if (this._pendingStartAt && now - this._pendingStartAt < Transcriber.startAckMs) return false;
+      if (this.awaitingStartAck()) return false;
       // 予定済みの ja 再起動はピークで潰さない。init() が遅い onresult を外す。
       if (this.language === 'ja-JP' && !this._isIOS && this._restartTimer) return false;
       this._lastNudgeAt = now;
@@ -1056,7 +1070,7 @@ class Transcriber {
       this._pendingStartAt = 0;
       this._signalResumeNeeded();
       if (!this._restartTimer) this._scheduleRestart(Transcriber.restartDelay('end', this._isIOS, this.language));
-    }, Transcriber.startAckMs);
+    }, this._isIOS ? Transcriber.iosStartAckMs : Transcriber.startAckMs);
   }
 
   /**
@@ -1400,6 +1414,9 @@ class Transcriber {
    * start() から onstart まで待つ時間。これより早い gap nudge は初回認識を abort する。
    */
   static startAckMs = 1200;
+
+  /** iOS は onstart が遅れやすい。再開直後の二重 init を避ける */
+  static iosStartAckMs = 2200;
 
   /**
    * onstart のあと一度も仮説が来ない desktop 向け。「再開」と自動復帰の目安。
