@@ -711,7 +711,7 @@ const VoiceScribeRecordingHealth = {
       this._reattachLiveSttAfterMic();
     } else if (!t.isEngineRunning()) {
       this._reattachLiveSttAfterMic();
-    } else if (t.isCaptionStalled()) {
+    } else if (t.isCaptionStalled() && (t.isZombieEngine() || !t.isEngineRunning())) {
       t.reviveLiveCaption();
     } else if (t.needsResume()) {
       t.continueListening();
@@ -748,7 +748,7 @@ const VoiceScribeRecordingHealth = {
     if (!this.isRecording || this._userPaused) return;
     const t = this.transcriber;
     if (t.inUserResumeGrace()) {
-      if (t.isZombieEngine() || t.isCaptionStalled()) {
+      if (t.isZombieEngine()) {
         this._reattachLiveSttAfterMic();
       } else if (t.awaitingStartAck() || t.isEngineRunning()) {
         return;
@@ -756,9 +756,7 @@ const VoiceScribeRecordingHealth = {
     }
     if (this.recorder && this.recorder.state === 'recording') {
       const live = t.isEngineRunning();
-      const interim = (t.interimTranscript || '').trim();
-      const stale = t.msSinceResult() > Transcriber.liveAttachStaleMs;
-      if (!live || (stale && !interim)) {
+      if (!live || t.isZombieEngine()) {
         if (t.awaitingStartAck() && !t.isZombieEngine()) return;
         if (t.inIosPhraseGap && t.inIosPhraseGap()) return;
         this._reattachLiveSttAfterMic();
@@ -792,7 +790,7 @@ const VoiceScribeRecordingHealth = {
       return;
     }
     if (t.inUserResumeGrace()) {
-      if (t.isZombieEngine() || t.isCaptionStalled()) {
+      if (t.isZombieEngine()) {
         t.reattachAfterSharedMic({ micContended: true });
       }
       return;
@@ -801,7 +799,7 @@ const VoiceScribeRecordingHealth = {
       && !t.awaitingStartAck()) {
       this._reattachLiveSttAfterMic();
     }
-    if (t.isCaptionStalled()) {
+    if (t.isCaptionStalled() && (t.isZombieEngine() || !t.isEngineRunning())) {
       t.reviveLiveCaption();
     }
   }

@@ -847,6 +847,8 @@ class Transcriber {
   reviveLiveCaption() {
     if (!this.shouldRestart || !this.isListening) return false;
     if (!this.isCaptionStalled()) return false;
+    // desktop: エンジンが動いているあいだ stop/unwedge しない（continuous を切らない）
+    if (!this._isIOS && this._engineRunning && !this.isZombieEngine()) return false;
     const minGap = Transcriber.stallAutoRestartMs;
     if (this._lastReviveAt && Date.now() - this._lastReviveAt < minGap) return false;
     this._lastReviveAt = Date.now();
