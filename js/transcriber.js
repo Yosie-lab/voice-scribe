@@ -714,6 +714,21 @@ class Transcriber {
   }
 
   /**
+   * onstart だけ立って onresult / 暫定が来ない（マイク取り合い後に多い）。
+   * @returns {boolean}
+   */
+  isZombieEngine() {
+    if (!this._engineRunning || !this.shouldRestart || !this.isListening) return false;
+    if ((this.interimTranscript || '').trim()) return false;
+    const ms = this.msSinceResult();
+    const sinceEngine = this._sessionStartedAt ? Date.now() - this._sessionStartedAt : ms;
+    const bootMs = this._isIOS ? 2800 : 2200;
+    if (!this._gotHypothesis && sinceEngine < bootMs) return false;
+    const staleMs = this._isIOS ? 2200 : 2500;
+    return ms >= staleMs;
+  }
+
+  /**
    * テキストをリセット
    */
   reset() {
@@ -747,7 +762,9 @@ class Transcriber {
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
     if (this.inUserResumeGrace()) {
       if (this._resumeNeeded) return true;
-      if (this.awaitingStartAck() || this._engineRunning) return false;
+      if (this.isZombieEngine() || this.isCaptionStalled()) return true;
+      if (this.awaitingStartAck()) return false;
+      if (this._engineRunning) return false;
     }
     if (this._resumeNeeded || this._resumeWhenVisible) return true;
     if (this._hold) return this.isCaptionStalled();
@@ -774,6 +791,7 @@ class Transcriber {
     if (this._resumeNeeded) return true;
     if (this.isCaptionStalled()) return true;
     if (this._engineRunning) {
+      if (this.isZombieEngine()) return true;
       if (this._isIOS && stale && this._gotHypothesis) return true;
       return false;
     }

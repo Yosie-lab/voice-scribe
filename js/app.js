@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v92';
+const APP_BUILD = 'v93';
 
 class VoiceScribeApp {
   constructor() {
@@ -1202,6 +1202,7 @@ class VoiceScribeApp {
     const captureDown = this.recorder.needsRecovery();
 
     const kicked = this.transcriber.manualResumeListening(true);
+    this.transcriber.reattachAfterSharedMic({ micContended: true });
     this._recoverAttempts = 0;
     this._startCaptionWatch();
     this._startSpeechWatch();
@@ -1263,10 +1264,10 @@ class VoiceScribeApp {
     const now = Date.now();
     if (now - this._lastMicReattachAt < 400) return;
     this._lastMicReattachAt = now;
-    if (!this.transcriber.isEngineRunning()) {
+    if (!this.transcriber.isEngineRunning() || this.transcriber.isZombieEngine()) {
       this.transcriber.reattachAfterSharedMic({ micContended: true });
     }
-    if (!this.transcriber.isEngineRunning() && this._isIOSDevice()) {
+    if ((!this.transcriber.isEngineRunning() || this.transcriber.isZombieEngine()) && this._isIOSDevice()) {
       this.transcriber.manualResumeListening(false);
     }
   }
@@ -1286,9 +1287,12 @@ class VoiceScribeApp {
         return;
       }
       if (!this.transcriber.inUserResumeGrace()) return;
-      if (this.transcriber.isEngineRunning()) return;
-      if (this.transcriber.awaitingStartAck()) return;
-      this.transcriber.manualResumeListening(false);
+      if (this.transcriber.isEngineRunning() && !this.transcriber.isZombieEngine()) return;
+      if (this.transcriber.awaitingStartAck() && !this.transcriber.isZombieEngine()) return;
+      this.transcriber.reattachAfterSharedMic({ micContended: true });
+      if (!this.transcriber.isEngineRunning()) {
+        this.transcriber.manualResumeListening(false);
+      }
       this._syncResumeReading();
     };
     this._resumeBoostTimer = setInterval(tick, 400);
@@ -1323,8 +1327,12 @@ class VoiceScribeApp {
    */
   _ensureLiveRecognition() {
     if (!this.isRecording || this._userPaused) return;
-    if (this.transcriber.inUserResumeGrace() && (this.transcriber.awaitingStartAck() || this.transcriber.isEngineRunning())) {
-      return;
+    if (this.transcriber.inUserResumeGrace()) {
+      if (this.transcriber.isZombieEngine() || this.transcriber.isCaptionStalled()) {
+        this._reattachLiveSttAfterMic();
+      } else if (this.transcriber.awaitingStartAck() || this.transcriber.isEngineRunning()) {
+        return;
+      }
     }
     if (this.recorder && this.recorder.state === 'recording') {
       const live = this.transcriber.isEngineRunning();
@@ -1357,7 +1365,13 @@ class VoiceScribeApp {
     }
     this._syncResumeReading();
     if (this.transcriber._resumeNeeded) return;
-    if (this.transcriber.inUserResumeGrace()) return;
+    if (this.transcriber.inUserResumeGrace()) {
+      if (this.transcriber.isZombieEngine() || this.transcriber.isCaptionStalled()) {
+        this.transcriber.reattachAfterSharedMic({ micContended: true });
+      }
+      this._syncResumeReading();
+      return;
+    }
     if (this.recorder && this.recorder.state === 'recording' && !this.transcriber.isEngineRunning()
       && !this.transcriber.inUserResumeGrace() && !this.transcriber.awaitingStartAck()) {
       this._reattachLiveSttAfterMic();
@@ -1460,6 +1474,12 @@ class VoiceScribeApp {
 
     if (this._speechHotMs < profile.gapMs && this._stallHotMs < profile.stallMs) return;
 
+    if (this.transcriber.isZombieEngine()) {
+      this.transcriber.reattachAfterSharedMic({ micContended: true });
+      this._speechHotMs = 0;
+      this._stallHotMs = 0;
+      return;
+    }
     if (!this.transcriber.isEngineRunning()) {
       if (this._speechHotMs < profile.gapMs) return;
       this.transcriber.nudge('gap');
@@ -1709,7 +1729,7 @@ class VoiceScribeApp {
       '・<b>横画面</b>にする: コントロールセンター → 「画面の向きをロック」を OFF にしてから端末を横に。<br>',
       '・<b>ホーム画面</b>から起動している場合: アイコンを削除 → Safari で ',
       '<a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener">yosie-lab.github.io/voice-scribe</a>',
-      ' を開く → ⚙️ でビルド v92 を確認 → 共有 → ホーム画面に追加。',
+      ' を開く → ⚙️ でビルド v93 を確認 → 共有 → ホーム画面に追加。',
       '<br>今朝のアップデートで向きがおかしくなった場合も、上と同じ手順で古いホーム画面アイコンを消してください。'
     ].join('');
   }
@@ -2396,7 +2416,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=92');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=93');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();
