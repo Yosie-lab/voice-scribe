@@ -412,8 +412,8 @@ record(
 assert(Transcriber.restartDelay('no-speech', false, 'en-US') === 25, 'en no-speech');
 assert(Transcriber.restartDelay('end', false, 'en-US') === 35, 'en end');
 assert(Transcriber.restartDelay('stall', false, 'en-US') === 30, 'en stall');
-assert(Transcriber.restartDelay('no-speech', true, 'ja-JP') === 70, 'ios no-speech');
-assert(Transcriber.restartDelay('end', true, 'ja-JP') === 90, 'ios end');
+assert(Transcriber.restartDelay('no-speech', true, 'ja-JP') === 55, 'ios no-speech');
+assert(Transcriber.restartDelay('end', true, 'ja-JP') === 75, 'ios end');
 assert(Transcriber.restartDelay('no-speech', false, 'ja-JP') === 25, 'ja no-speech matches english');
 assert(Transcriber.restartDelay('end', false, 'ja-JP') === 35, 'ja end matches english');
 assert(
@@ -609,12 +609,13 @@ assert(!index.includes('v=82'), 'index cache bust left 82');
 assert(!index.includes('v=81'), 'index cache bust left 81');
 assert(!index.includes('v=80'), 'index cache bust left 80');
 assert(!index.includes('v=79'), 'index cache bust left 79');
-assert(index.includes('v=85'), 'index is v85');
+assert(index.includes('v=86'), 'index is v86');
 assert(index.includes('transcriber-policy.js'), 'transcriber policy module is loaded');
 assert(index.includes('transcriber-ja-text.js'), 'transcriber ja text module is loaded');
 assert(index.includes('app-recording-health.js'), 'app recording health module is loaded');
-assert(sw.includes("voicescribe-v85"), 'sw cache name');
-assert(!app.includes('_gestureKickRecognition'), 'record does not pre-start STT on pointerdown');
+assert(sw.includes("voicescribe-v86"), 'sw cache name');
+assert(app.includes('_gestureKickRecognition'), 'iOS record pointerdown pre-starts STT');
+assert(app.includes('_scheduleIosPostMicWarmup'), 'iOS delayed mic warmup reattach');
 assert(app.includes('_kickLiveRecognitionAtRecordStart'), 'record start kicks STT once');
 assert(!sw.includes('voicescribe-v82'), 'old sw name gone');
 const manifest = fs.readFileSync(path.join(root, 'manifest.json'), 'utf8');
@@ -624,7 +625,7 @@ assert(manifest.includes('"id": "./"'), 'manifest id stays stable for iOS home s
 assert(!app.includes('navigator.wakeLock.request'), 'wake lock does not block device lock');
 assert(!app.includes('screen.orientation.unlock'), 'no orientation unlock calls on iOS');
 assert(app.includes('_syncViewportHeight'), 'viewport resync on rotate for iOS Safari');
-assert(app.includes("APP_BUILD = 'v85'"), 'app build tag is v85');
+assert(app.includes("APP_BUILD = 'v86'"), 'app build tag is v86');
 assert(transcriberSrc.includes('msSinceCaptionChange'), 'stall uses caption content time');
 assert(transcriberSrc.includes('polishJaCommitted'), 'long ja repeats are polished');
 assert(css.includes('caption-stalled-recording'), 'stalled recording forces resume visible');
@@ -638,7 +639,7 @@ assert(app.includes('_stageDraftFromStop'), 'stop shows draft play before save f
 assert(transcriberSrc.includes('jaOverlapMax'), 'long ja overlap cap is named');
 assert(transcriberSrc.includes('collapseAdjacentJaRepeats'), 'adjacent ja repeats collapse after commit');
 assert(app.includes('app-ios-rotation-hint'), 'settings explain iPhone rotation limits');
-assert(app.includes('sw.js?v=85'), 'service worker registration is cache-busted');
+assert(app.includes('sw.js?v=86'), 'service worker registration is cache-busted');
 assert(transcriberSrc.includes('isZombieEngine'), 'zombie onstart without captions is detectable');
 assert(app.includes('isZombieEngine()'), 'app reattaches when recognition is zombie');
 assert(transcriberSrc.includes('_cleanLiveInterim'), 'interim repeat uses the commit dedupe window');
@@ -799,7 +800,7 @@ const bootstrapAt = startFn.indexOf('_bootstrapLiveTranscriptionAfterMic');
 assert(recorderAt !== -1 && bootstrapAt > recorderAt, 'STT bootstrap runs right after mic open');
 assert(startFn.indexOf('if (recognitionFirst)') !== -1, 'iOS pre-mic STT kick in user gesture');
 assert(transcriberSrc.includes('get startBeforeRecorder') && transcriberSrc.includes('return this._isIOS'), 'iOS starts STT before mic, desktop after');
-assert(app.includes('reattachAfterSharedMic({ micContended: true })'), 'post-mic STT always reattaches');
+assert(app.includes('_scheduleIosPostMicWarmup'), 'iOS post-mic warmup when captions stay empty');
 
 function countSpan(text, span) {
   const norm = (text || '').replace(/[。、！？!?\s\u3000]/g, '');

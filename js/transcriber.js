@@ -722,9 +722,9 @@ class Transcriber {
     if ((this.interimTranscript || '').trim()) return false;
     const ms = this.msSinceResult();
     const sinceEngine = this._sessionStartedAt ? Date.now() - this._sessionStartedAt : ms;
-    const bootMs = this._isIOS ? 2800 : 2200;
+    const bootMs = this._isIOS ? 1800 : 2200;
     if (!this._gotHypothesis && sinceEngine < bootMs) return false;
-    const staleMs = this._isIOS ? 2200 : 2500;
+    const staleMs = this._isIOS ? 1800 : 2500;
     return ms >= staleMs;
   }
 

@@ -89,8 +89,8 @@ const TranscriberPolicy = {
    */
   restartDelay(kind, isIOS, _language) {
     if (isIOS) {
-      if (kind === 'no-speech' || kind === 'stall') return 70;
-      return 90;
+      if (kind === 'no-speech' || kind === 'stall') return 55;
+      return 75;
     }
     if (kind === 'no-speech') return 25;
     if (kind === 'stall') return 30;
@@ -153,7 +153,7 @@ const TranscriberPolicy = {
   /**
    * iOS は発話ごとに onend があり、最初の仮説まで時間がかかることがある。
    */
-  iosCaptionBootMs: 9000,
+  iosCaptionBootMs: 6500,
 
   /**
    * 仮説のあと結果が途切れたときの字幕停止。jaStaleStopMs と揃える。
