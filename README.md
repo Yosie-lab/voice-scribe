@@ -37,6 +37,7 @@ npx serve -l 3000 .
 ## 🛠️ 技術スタック
 
 - **フロントエンド**: HTML5, CSS3 (Vanilla CSS / Glassmorphism), Vanilla JavaScript (ES6+)
+- **アプリ構成**: `app.js`（画面・一覧）＋ `app-recording-session.js`（録音開始/停止）＋ `app-recording-health.js`（ライブ STT 復旧）
 - **音声処理**: MediaRecorder API, Web Audio API, Web Speech API
 - **ストレージ**: IndexedDB
 - **PWA**: Service Worker, Web App Manifest
