@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v87';
+const APP_BUILD = 'v88';
 
 class VoiceScribeApp {
   constructor() {
@@ -1183,22 +1183,11 @@ class VoiceScribeApp {
 
     // iOS: マイク復旧より先に認識を付ける（await 前）。録音経路の復旧は後ろで非同期。
     const kicked = this.transcriber.manualResumeListening(true);
-    this._ensureLiveRecognition();
     this._recoverAttempts = 0;
     this._startCaptionWatch();
     this._startSpeechWatch();
     this._armResumeBoost();
     this._syncResumeReading();
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(() => {
-        if (!this.isRecording || this._userPaused) return;
-        if (!this.transcriber.isEngineRunning()) {
-          this.transcriber.manualResumeListening(false);
-          this._ensureLiveRecognition();
-          this._syncResumeReading();
-        }
-      });
-    }
     if (!kicked) {
       this.ui.showToast('再開できませんでした。もう一度「再開」をタップしてください', 'error', 3500);
     } else {
@@ -1212,7 +1201,7 @@ class VoiceScribeApp {
           this.visualizer.stopIdleAnimation();
           this.visualizer.connectStream(stream);
         }
-        if (!this.transcriber.isEngineRunning()) {
+        if (!this.transcriber.isEngineRunning() && !this.transcriber.awaitingStartAck()) {
           this.transcriber.manualResumeListening(false);
         }
         this._syncResumeReading();
@@ -1243,7 +1232,7 @@ class VoiceScribeApp {
       await this.visualizer.connectStream(stream);
     }
 
-    if (!this.transcriber.isEngineRunning()) {
+    if (!this.transcriber.isEngineRunning() && !this.transcriber.awaitingStartAck()) {
       this.transcriber.manualResumeListening(ios);
     }
     this._syncResumeReading();
@@ -1258,19 +1247,18 @@ class VoiceScribeApp {
     let ticks = 0;
     const tick = () => {
       ticks++;
-      if (!this.isRecording || this._userPaused || ticks > 24) {
+      if (!this.isRecording || this._userPaused || ticks > 20) {
         clearInterval(this._resumeBoostTimer);
         this._resumeBoostTimer = null;
         return;
       }
       if (!this.transcriber.inUserResumeGrace()) return;
       if (this.transcriber.isEngineRunning()) return;
+      if (this.transcriber.awaitingStartAck()) return;
       this.transcriber.manualResumeListening(false);
-      this._ensureLiveRecognition();
       this._syncResumeReading();
     };
-    tick();
-    this._resumeBoostTimer = setInterval(tick, 250);
+    this._resumeBoostTimer = setInterval(tick, 400);
   }
 
   /**
@@ -1302,6 +1290,10 @@ class VoiceScribeApp {
    */
   _ensureLiveRecognition() {
     if (!this.isRecording || this._userPaused) return;
+    if (this.transcriber.inUserResumeGrace() && (this.transcriber.awaitingStartAck() || this.transcriber.isEngineRunning())) {
+      return;
+    }
+    if (this.transcriber.awaitingStartAck()) return;
     if (this.transcriber.isEngineRunning() && !this.transcriber.isCaptionStalled()) return;
     if (this.transcriber.needsResume()) this.transcriber.continueListening();
   }
@@ -1671,7 +1663,7 @@ class VoiceScribeApp {
       '・<b>横画面</b>にする: コントロールセンター → 「画面の向きをロック」を OFF にしてから端末を横に。<br>',
       '・<b>ホーム画面</b>から起動している場合: アイコンを削除 → Safari で ',
       '<a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener">yosie-lab.github.io/voice-scribe</a>',
-      ' を開く → ⚙️ でビルド v87 を確認 → 共有 → ホーム画面に追加。',
+      ' を開く → ⚙️ でビルド v88 を確認 → 共有 → ホーム画面に追加。',
       '<br>今朝のアップデートで向きがおかしくなった場合も、上と同じ手順で古いホーム画面アイコンを消してください。'
     ].join('');
   }
@@ -2358,7 +2350,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=87');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=88');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();
