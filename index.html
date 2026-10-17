@@ -13,13 +13,13 @@
   <title>VoiceScribe — 文字起こしボイスレコーダー</title>
 
   <!-- PWAマニフェスト -->
-  <link rel="manifest" href="manifest.json?v=92">
+  <link rel="manifest" href="manifest.json?v=93">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" sizes="192x192" href="icons/icon-192.png">
   <link rel="apple-touch-icon" sizes="512x512" href="icons/icon-512.png">
 
   <!-- スタイルシート -->
-  <link rel="stylesheet" href="css/style.css?v=92">
+  <link rel="stylesheet" href="css/style.css?v=93">
 
   <!-- ファビコン -->
   <link rel="icon" href="icons/icon-192.png" type="image/png">
@@ -287,6 +287,11 @@
 
           <div class="settings-section">
             <p class="settings-hint" id="app-build-info">アプリ情報を読み込み中…</p>
+            <p class="settings-hint" id="app-live-stt-hint">
+              <b>リアルタイム文字起こしについて</b><br>
+              ブラウザ内蔵の音声認識（Web Speech API）を使っています。音量メーターの感度は「認識が死んだか」の検知用で、聞き取り精度そのものは <b>PC の Chrome</b> や <b>iPhone の Safari（ホーム画面追加）</b>・マイク許可・静かな環境のほうが左右します。<br>
+              録音ボタンを押してから話してください。途中で止まったら、黙りすぎず続けて話すか、一度停止して録り直すのが確実です。
+            </p>
             <p class="settings-hint" id="app-ios-rotation-hint" style="display:none;"></p>
           </div>
 
@@ -316,16 +321,16 @@
   </div>
 
   <!-- ===== JavaScript モジュール ===== -->
-  <script src="js/storage.js?v=92"></script>
-  <script src="js/recorder.js?v=92"></script>
-  <script src="js/transcriber-policy.js?v=92"></script>
-  <script src="js/transcriber-ja-text.js?v=92"></script>
-  <script src="js/transcriber.js?v=92"></script>
-  <script src="js/whisper.js?v=92"></script>
-  <script src="js/visualizer.js?v=92"></script>
-  <script src="js/obsidian.js?v=92"></script>
-  <script src="js/ui.js?v=92"></script>
-  <script src="js/app-recording-health.js?v=92"></script>
-  <script src="js/app.js?v=92"></script>
+  <script src="js/storage.js?v=93"></script>
+  <script src="js/recorder.js?v=93"></script>
+  <script src="js/transcriber-policy.js?v=93"></script>
+  <script src="js/transcriber-ja-text.js?v=93"></script>
+  <script src="js/transcriber.js?v=93"></script>
+  <script src="js/whisper.js?v=93"></script>
+  <script src="js/visualizer.js?v=93"></script>
+  <script src="js/obsidian.js?v=93"></script>
+  <script src="js/ui.js?v=93"></script>
+  <script src="js/app-recording-health.js?v=93"></script>
+  <script src="js/app.js?v=93"></script>
 </body>
 </html>
