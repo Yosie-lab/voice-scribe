@@ -847,7 +847,7 @@ class Transcriber {
   reviveLiveCaption() {
     if (!this.shouldRestart || !this.isListening) return false;
     if (!this.isCaptionStalled()) return false;
-    const minGap = this._isIOS ? Transcriber.iosAutoReviveMs : Transcriber.desktopAutoReviveMs;
+    const minGap = Transcriber.stallAutoRestartMs;
     if (this._lastReviveAt && Date.now() - this._lastReviveAt < minGap) return false;
     this._lastReviveAt = Date.now();
     this._stallReviveCount++;

@@ -161,26 +161,30 @@ const TranscriberPolicy = {
   iosCaptionBootMs: 7200,
 
   /**
-   * 仮説のあと結果が途切れたときの字幕停止。jaStaleStopMs と揃える。
+   * 字幕が止まったとみなす時間。止まってから約 1.4s で自動付け直し（＋ヘルス poll）。
+   * jaStaleStopMs より短くする（desktop ja の stop() は別経路）。
    */
-  captionStaleMs: 3800,
+  captionStaleMs: 1400,
 
   /**
-   * iOS は発話ごとに onend があり、desktop より早く「止まった」ように見える。
+   * iOS も同目標。発話ごとの onend は inIosPhraseGap で除外。
    */
-  iosCaptionStaleMs: 3400,
+  iosCaptionStaleMs: 1400,
 
-  /** 自動 revive の最短間隔（再開ボタンなし運用） */
-  iosAutoReviveMs: 650,
+  /** 止まったあと自動再開までの最短間隔（ms）— desktop / iOS 共通 1.4s */
+  stallAutoRestartMs: 1400,
 
-  /** 字幕ヘルスチェック間隔（再開ボタンなし運用） */
-  captionHealthPollMs: 250,
-
-  /** 暫定が止まったあと付け直すまで（onstart 待ちとは別） */
-  liveAttachStaleMs: 2000,
+  /** 自動 revive の最短間隔（stallAutoRestartMs と同じ） */
+  iosAutoReviveMs: 1400,
 
   /** desktop の reviveLiveCaption 最短間隔 */
-  desktopAutoReviveMs: 1200,
+  desktopAutoReviveMs: 1400,
+
+  /** 字幕ヘルスチェック間隔 */
+  captionHealthPollMs: 200,
+
+  /** 暫定が止まったあと付け直すまで（onstart 待ちとは別） */
+  liveAttachStaleMs: 1400,
 
   /** isZombieEngine: onstart だけ来て仮説が無い */
   zombieBootDesktopMs: 1800,
