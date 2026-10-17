@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v86';
+const APP_BUILD = 'v87';
 
 class VoiceScribeApp {
   constructor() {
@@ -143,7 +143,6 @@ class VoiceScribeApp {
     // 録音開始/停止ボタン
     const recordBtn = document.getElementById('record-btn');
     if (recordBtn) {
-      recordBtn.addEventListener('pointerdown', () => this._gestureKickRecognition(), true);
       recordBtn.addEventListener('click', () => this._toggleRecording());
     }
 
@@ -227,10 +226,6 @@ class VoiceScribeApp {
 
     const continueBtn = document.getElementById('continue-recording-btn');
     if (continueBtn) {
-      continueBtn.addEventListener('pointerdown', () => {
-        if (this.isRecording || this._stopPromise || this._starting) return;
-        this._gestureKickRecognition({ continueDraft: true });
-      }, true);
       continueBtn.addEventListener('click', () => {
         if (this.isRecording || this._stopPromise || this._starting) return;
         this._startRecording({ continueDraft: true });
@@ -296,11 +291,6 @@ class VoiceScribeApp {
       this._resumePrefix = '';
     }
 
-    const recognitionFirst = this.transcriber.startBeforeRecorder;
-    if (recognitionFirst) {
-      this._kickLiveRecognitionAtRecordStart();
-    }
-
     let prior = null;
     if (continueDraft && this._draftId) {
       try {
@@ -363,6 +353,11 @@ class VoiceScribeApp {
     const placeholderEl = document.getElementById('transcript-placeholder');
     if (placeholderEl) {
       placeholderEl.style.display = 'none';
+    }
+
+    const recognitionFirst = this.transcriber.startBeforeRecorder;
+    if (recognitionFirst) {
+      this._kickLiveRecognitionAtRecordStart();
     }
 
     try {
@@ -648,46 +643,13 @@ class VoiceScribeApp {
   }
 
   /**
-   * iOS: 録音ボタンの pointerdown / 録音開始で、await より先に認識を付ける。
-   * @param {{continueDraft?: boolean}} [options]
-   * @private
-   */
-  _gestureKickRecognition(options) {
-    if (!this.transcriber.startBeforeRecorder) return;
-    if (this.isRecording || this._stopPromise) return;
-    if (options && options.continueDraft) this._armContinueDraftPrefixFromMemory();
-    this.transcriber.setLanguage(this._activeLanguage());
-    this._bindLiveTranscriptCallback();
-    if (this.transcriber.isEngineRunning()) {
-      if (this._resumePrefix) this._primeContinuedTranscript();
-      return;
-    }
-    try {
-      if (this.transcriber.isListening) {
-        this.transcriber.manualResumeListening(false);
-      } else {
-        this.transcriber.start();
-      }
-    } catch (error) {
-      console.warn('SpeechRecognition gesture kick:', error);
-    }
-    if (this._resumePrefix) this._primeContinuedTranscript();
-  }
-
-  /**
-   * 録音開始時に認識を付ける（ジェスチャ先走り後の二重 start を避ける）。
+   * 録音開始時に認識を付ける（1 回だけ start。二重 init で録音/STT が死なない）。
    * @private
    */
   _kickLiveRecognitionAtRecordStart() {
     let started = false;
     try {
-      if (this.transcriber.isEngineRunning()) {
-        started = true;
-      } else if (this.transcriber.isListening) {
-        started = this.transcriber.manualResumeListening(false);
-      } else {
-        started = this.transcriber.start() !== false;
-      }
+      started = this.transcriber.start() !== false;
     } catch (error) {
       console.warn('SpeechRecognition start warning:', error);
     }
@@ -1709,7 +1671,7 @@ class VoiceScribeApp {
       '・<b>横画面</b>にする: コントロールセンター → 「画面の向きをロック」を OFF にしてから端末を横に。<br>',
       '・<b>ホーム画面</b>から起動している場合: アイコンを削除 → Safari で ',
       '<a href="https://yosie-lab.github.io/voice-scribe/" target="_blank" rel="noopener">yosie-lab.github.io/voice-scribe</a>',
-      ' を開く → ⚙️ でビルド v86 を確認 → 共有 → ホーム画面に追加。',
+      ' を開く → ⚙️ でビルド v87 を確認 → 共有 → ホーム画面に追加。',
       '<br>今朝のアップデートで向きがおかしくなった場合も、上と同じ手順で古いホーム画面アイコンを消してください。'
     ].join('');
   }
@@ -2396,7 +2358,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=86');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=87');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();
