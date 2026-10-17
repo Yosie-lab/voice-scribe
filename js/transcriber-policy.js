@@ -22,9 +22,9 @@ const TranscriberPolicy = {
         floor: 0.004,
         abs: 0.007,
         mult: 2,
-        gapMs: 200,
-        stallMs: 2000,
-        resultMs: 2500,
+        gapMs: 160,
+        stallMs: 1600,
+        resultMs: 2200,
         usePeak: true,
         stallFloor: 0.012,
         stallAbs: 0.018,
@@ -107,7 +107,7 @@ const TranscriberPolicy = {
    * 仮説が一度出た desktop ja が、その後結果を足さないとき stop() するまでの待ち。
    * jaResultGraceMs より長く、2.5 秒の stall abort と speechend 900ms の abort より遅い。
    */
-  jaStaleStopMs: 4500,
+  jaStaleStopMs: 4000,
 
   /**
    * ライブ ja セッションを止めて結果を求めるまでの待ち。2.5 秒の abort は仮説より短い。
@@ -135,7 +135,7 @@ const TranscriberPolicy = {
   /**
    * iOS onend 〜 scheduled restart。暫定を消さず stall / reattach を抑える。
    */
-  iosPhraseGapMs: 1400,
+  iosPhraseGapMs: 1200,
 
   /**
    * 回復の stop() のあと onend が来ないとき、認識だけ付け直すまでの待ち。
@@ -153,25 +153,38 @@ const TranscriberPolicy = {
   /**
    * onstart のあと一度も仮説が来ない desktop 向け。「再開」と自動復帰の目安。
    */
-  captionBootMs: 5000,
+  captionBootMs: 4200,
 
   /**
    * iOS は発話ごとに onend があり、最初の仮説まで時間がかかることがある。
    */
-  iosCaptionBootMs: 9000,
+  iosCaptionBootMs: 7200,
 
   /**
    * 仮説のあと結果が途切れたときの字幕停止。jaStaleStopMs と揃える。
    */
-  captionStaleMs: 4500,
+  captionStaleMs: 3800,
 
   /**
    * iOS は発話ごとに onend があり、desktop より早く「止まった」ように見える。
    */
-  iosCaptionStaleMs: 4200,
+  iosCaptionStaleMs: 3400,
 
   /** 自動 revive の最短間隔（再開ボタンなし運用） */
-  iosAutoReviveMs: 900,
+  iosAutoReviveMs: 650,
+
+  /** 字幕ヘルスチェック間隔（再開ボタンなし運用） */
+  captionHealthPollMs: 300,
+
+  /** 暫定が止まったあと付け直すまで（onstart 待ちとは別） */
+  liveAttachStaleMs: 2000,
+
+  /** desktop の reviveLiveCaption 最短間隔 */
+  desktopAutoReviveMs: 1400,
+
+  /** isZombieEngine: onstart だけ来て仮説が無い */
+  zombieBootDesktopMs: 1800,
+  zombieBootIosMs: 2400,
 
   /** iOS で「再開」を出し始めるまで（確定が動いていない時間） */
   iosResumeOfferMs: 1800,

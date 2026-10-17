@@ -740,9 +740,11 @@ class Transcriber {
     if ((this.interimTranscript || '').trim()) return false;
     const ms = this.msSinceResult();
     const sinceEngine = this._sessionStartedAt ? Date.now() - this._sessionStartedAt : ms;
-    const bootMs = this._isIOS ? 2800 : 2200;
+    const bootMs = this._isIOS ? Transcriber.zombieBootIosMs : Transcriber.zombieBootDesktopMs;
     if (!this._gotHypothesis && sinceEngine < bootMs) return false;
-    const staleMs = this._isIOS ? 2200 : 2500;
+    const staleMs = this._isIOS
+      ? Math.min(2200, Transcriber.iosCaptionStaleMs)
+      : Math.min(2200, Transcriber.captionStaleMs);
     return ms >= staleMs;
   }
 
@@ -845,7 +847,7 @@ class Transcriber {
   reviveLiveCaption() {
     if (!this.shouldRestart || !this.isListening) return false;
     if (!this.isCaptionStalled()) return false;
-    const minGap = this._isIOS ? Transcriber.iosAutoReviveMs : 2000;
+    const minGap = this._isIOS ? Transcriber.iosAutoReviveMs : Transcriber.desktopAutoReviveMs;
     if (this._lastReviveAt && Date.now() - this._lastReviveAt < minGap) return false;
     this._lastReviveAt = Date.now();
     this._stallReviveCount++;

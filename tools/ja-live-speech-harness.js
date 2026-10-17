@@ -368,11 +368,9 @@ assert(Transcriber.isSpeechHot(quietLevel, enProfile.floor, enProfile) === false
 assert(Transcriber.isSpeechHot(0.02, enProfile.floor, enProfile) === hotV57(0.02, 0.012), 'english 0.02 same');
 assert(iosProfile.abs === 0.018 && iosProfile.gapMs === 600 && !iosProfile.usePeak, 'iOS profile unchanged');
 assert(enProfile.resultMs === 2500 && enProfile.stallMs === 2000 && enProfile.gapMs === 600 && !enProfile.usePeak, 'english stall unchanged');
-assert(jaProfile.gapMs === 200 && jaProfile.usePeak === true, 'ja restarts a dead engine on one short peak');
-assert(
-  jaProfile.stallMs === enProfile.stallMs && jaProfile.resultMs === enProfile.resultMs,
-  'ja live abort window matches english'
-);
+assert(jaProfile.gapMs === 160 && jaProfile.usePeak === true, 'ja restarts a dead engine on one short peak');
+assert(jaProfile.stallMs === 1600 && jaProfile.resultMs === 2200, 'ja desktop stall window is tighter');
+assert(jaProfile.stallMs < enProfile.stallMs && jaProfile.resultMs < enProfile.resultMs, 'ja reacts faster than english');
 assert(jaProfile.stallAbs === 0.018 && jaProfile.stallMult === 3.2, 'ja stall threshold matches english');
 
 const roomEma = 0.005;
@@ -554,12 +552,12 @@ assert(Transcriber.jaStaleRecovery({
   msSinceSpeechEnd: 9000, resultAfterSpeechEnd: false
 }) === 'none', 'the first hypothesis still belongs to the 8s watch');
 assert(Transcriber.jaStaleRecovery({
-  language: 'ja-JP', ios: false, gotResult: true, msSinceResult: 4500,
-  msSinceSpeechEnd: 4500, resultAfterSpeechEnd: false
+  language: 'ja-JP', ios: false, gotResult: true, msSinceResult: 4000,
+  msSinceSpeechEnd: 4000, resultAfterSpeechEnd: false
 }) === 'stop', 'a crumb then silence is stopped so the next speech can be heard');
 assert(Transcriber.jaStaleRecovery({
   language: 'ja-JP', ios: false, gotResult: true, msSinceResult: 1000,
-  msSinceSpeechEnd: 4500, resultAfterSpeechEnd: true
+  msSinceSpeechEnd: 4000, resultAfterSpeechEnd: true
 }) === 'none', 'a hypothesis after speechend keeps the session');
 assert(Transcriber.jaStaleRecovery({
   language: 'en-US', ios: false, gotResult: true, msSinceResult: 9000,
@@ -609,13 +607,13 @@ assert(!index.includes('v=82'), 'index cache bust left 82');
 assert(!index.includes('v=81'), 'index cache bust left 81');
 assert(!index.includes('v=80'), 'index cache bust left 80');
 assert(!index.includes('v=79'), 'index cache bust left 79');
-assert(!index.includes('v=88'), 'index cache bust left 88');
-assert(index.includes('v=89'), 'index is v89');
+assert(!index.includes('v=89'), 'index cache bust left 89');
+assert(index.includes('v=90'), 'index is v90');
 assert(index.includes('transcriber-policy.js'), 'transcriber policy module is loaded');
 assert(index.includes('transcriber-ja-text.js'), 'transcriber ja text module is loaded');
 assert(index.includes('app-recording-health.js'), 'app recording health module is loaded');
-assert(sw.includes("voicescribe-v89"), 'sw cache name');
-assert(!sw.includes('voicescribe-v88'), 'old sw name gone');
+assert(sw.includes("voicescribe-v90"), 'sw cache name');
+assert(!sw.includes('voicescribe-v89'), 'old sw name gone');
 assert(app.includes('_gestureKickRecognition'), 'record pointerdown pre-kicks STT on iOS');
 assert(app.includes('_kickLiveRecognitionAtRecordStart'), 'record start kicks STT once');
 assert(app.includes('_autoRecoverLiveStt'), 'app auto-recovers stalled STT');
@@ -628,7 +626,7 @@ assert(manifest.includes('"id": "./"'), 'manifest id stays stable for iOS home s
 assert(!app.includes('navigator.wakeLock.request'), 'wake lock does not block device lock');
 assert(!app.includes('screen.orientation.unlock'), 'no orientation unlock calls on iOS');
 assert(app.includes('_syncViewportHeight'), 'viewport resync on rotate for iOS Safari');
-assert(app.includes("APP_BUILD = 'v89'"), 'app build tag is v89');
+assert(app.includes("APP_BUILD = 'v90'"), 'app build tag is v90');
 assert(transcriberSrc.includes('msSinceCaptionChange'), 'stall uses caption content time');
 assert(transcriberSrc.includes('polishJaCommitted'), 'long ja repeats are polished');
 assert(!css.includes('caption-stalled-recording'), 'no resume UI class in css');
@@ -643,7 +641,7 @@ assert(app.includes('_stageDraftFromStop'), 'stop shows draft play before save f
 assert(transcriberSrc.includes('jaOverlapMax'), 'long ja overlap cap is named');
 assert(transcriberSrc.includes('collapseAdjacentJaRepeats'), 'adjacent ja repeats collapse after commit');
 assert(app.includes('app-ios-rotation-hint'), 'settings explain iPhone rotation limits');
-assert(app.includes('sw.js?v=89'), 'service worker registration is cache-busted');
+assert(app.includes('sw.js?v=90'), 'service worker registration is cache-busted');
 assert(!app.includes('onListeningChange'), 'listening change does not feedback auto-recover');
 assert(transcriberSrc.includes('isZombieEngine'), 'zombie onstart without captions is detectable');
 assert(app.includes('isZombieEngine()'), 'app reattaches when recognition is zombie');
@@ -726,7 +724,8 @@ assert(app.includes('setLanguage(this._activeLanguage())'), 'language set before
 assert(methodBody(app, '_checkCaptionHealth() {').includes('awaitingStartAck'), 'caption health waits for onstart ack');
 assert(methodBody(app, '_ensureLiveRecognition() {').includes('awaitingStartAck'), 'ensure live skips ack wait');
 assert(app.includes('_armRecognitionBootGrace'), 'ios boot arms resume grace');
-assert(methodBody(app, '_startCaptionWatch() {').includes('500'), 'caption health polls quickly');
+assert(transcriberSrc.includes('captionHealthPollMs'), 'caption poll interval is named in policy');
+assert(methodBody(app, '_startCaptionWatch() {').includes('captionHealthPollMs'), 'caption health uses policy poll ms');
 const recoverFn = methodBody(app, 'async _recoverActiveRecordingBody() {');
 assert(recoverFn && !recoverFn.includes('_stopRecording'), 'a lost mic does not end the recording');
 assert(recoverFn.includes('ensureCapture'), 'a lost mic reopens through the recorder');

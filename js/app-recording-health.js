@@ -88,7 +88,7 @@ const VoiceScribeRecordingHealth = {
         t.reattachAfterSharedMic({ micContended: true });
       }
       this._autoRecoverLiveStt();
-    }, 550);
+    }, 380);
   }
 ,
 
@@ -709,7 +709,7 @@ const VoiceScribeRecordingHealth = {
     if (this.transcriber.inIosPhraseGap && this.transcriber.inIosPhraseGap()) return;
     if (!this.recorder || this.recorder.state !== 'recording') return;
     const now = Date.now();
-    if (now - this._lastMicReattachAt < 400) return;
+    if (now - this._lastMicReattachAt < 320) return;
     this._lastMicReattachAt = now;
     if (!this.transcriber.isEngineRunning() || this.transcriber.isZombieEngine()) {
       this.transcriber.reattachAfterSharedMic({ micContended: true });
@@ -737,7 +737,7 @@ const VoiceScribeRecordingHealth = {
     if (this.recorder && this.recorder.state === 'recording') {
       const live = t.isEngineRunning();
       const interim = (t.interimTranscript || '').trim();
-      const stale = t.msSinceResult() > 2500;
+      const stale = t.msSinceResult() > Transcriber.liveAttachStaleMs;
       if (!live || (stale && !interim)) {
         if (t.awaitingStartAck() && !t.isZombieEngine()) return;
         if (t.inIosPhraseGap && t.inIosPhraseGap()) return;
@@ -825,7 +825,10 @@ const VoiceScribeRecordingHealth = {
    */
   _startCaptionWatch() {
     this._stopCaptionWatch();
-    this._captionWatch = setInterval(() => this._checkCaptionHealth(), 500);
+    this._captionWatch = setInterval(
+      () => this._checkCaptionHealth(),
+      Transcriber.captionHealthPollMs
+    );
   }
 ,
 
