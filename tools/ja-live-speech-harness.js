@@ -602,8 +602,8 @@ assert(!index.includes('v=82'), 'index cache bust left 82');
 assert(!index.includes('v=81'), 'index cache bust left 81');
 assert(!index.includes('v=80'), 'index cache bust left 80');
 assert(!index.includes('v=79'), 'index cache bust left 79');
-assert(index.includes('v=88'), 'index is v88');
-assert(sw.includes("voicescribe-v88"), 'sw cache name');
+assert(index.includes('v=88'), 'index is v89');
+assert(sw.includes("voicescribe-v89"), 'sw cache name');
 assert(!app.includes('_gestureKickRecognition'), 'record does not pre-start STT on pointerdown');
 assert(app.includes('_kickLiveRecognitionAtRecordStart'), 'record start kicks STT once');
 assert(!sw.includes('voicescribe-v82'), 'old sw name gone');
@@ -614,7 +614,7 @@ assert(manifest.includes('"id": "./"'), 'manifest id stays stable for iOS home s
 assert(!app.includes('navigator.wakeLock.request'), 'wake lock does not block device lock');
 assert(!app.includes('screen.orientation.unlock'), 'no orientation unlock calls on iOS');
 assert(app.includes('_syncViewportHeight'), 'viewport resync on rotate for iOS Safari');
-assert(app.includes("APP_BUILD = 'v88'"), 'app build tag is v88');
+assert(app.includes("APP_BUILD = 'v89'"), 'app build tag is v89');
 assert(transcriberSrc.includes('msSinceCaptionChange'), 'stall uses caption content time');
 assert(transcriberSrc.includes('polishJaCommitted'), 'long ja repeats are polished');
 assert(css.includes('caption-stalled-recording'), 'stalled recording forces resume visible');
@@ -710,6 +710,7 @@ assert(resumeFn.includes('_armResumeBoost'), 'resume arms post-tap recognition r
 assert(transcriberSrc.includes('inUserResumeGrace'), 'transcriber pauses auto-revive during user resume');
 assert(transcriberSrc.includes('awaitingStartAck'), 'resume waits for onstart before re-init');
 assert(transcriberSrc.includes('iosStartAckMs'), 'ios has longer start ack after manual resume');
+assert(transcriberSrc.includes('reattachAfterSharedMic'), 'mic open reattaches STT after ack stall');
 assert(methodBody(app, '_checkCaptionHealth() {').includes('inUserResumeGrace'), 'caption health skips revive during user resume');
 assert(index.includes('id="resume-reading-btn"'), 'resume button is in the page');
 assert(index.includes('id="resume-reading-header-btn"'), 'resume pill is in the transcript header');

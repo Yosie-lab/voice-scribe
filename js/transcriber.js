@@ -597,7 +597,7 @@ class Transcriber {
    * @returns {boolean}
    */
   continueListening() {
-    if (this.awaitingStartAck()) return true;
+    if (this.inUserResumeGrace() && this.awaitingStartAck()) return true;
     return this.manualResumeListening(false);
   }
 
@@ -620,6 +620,35 @@ class Transcriber {
   }
 
   /**
+   * MediaRecorder がマイクを取ったあと、onstart 前に落ちた認識を付け直す。
+   * ack 待ちを中断する（再開 grace 中の二重 init とは別経路）。
+   * @returns {boolean}
+   */
+  reattachAfterSharedMic() {
+    if (!this.shouldRestart || !this.isListening) return false;
+    if (this._engineRunning) return true;
+    this._clearStartAckWatch();
+    this._pendingStartAt = 0;
+    const hadText = !!((this.finalTranscript || '').trim() || (this.interimTranscript || '').trim());
+    for (let attempt = 0; attempt < 3; attempt++) {
+      this.init();
+      this._sessionStartedAt = Date.now();
+      if (hadText) this._gotHypothesis = true;
+      if (this._tryStartEngine('restart')) {
+        this._resumeWhenVisible = false;
+        this._heardSpeechAt = 0;
+        this._speechEndedAt = 0;
+        this.retryCount = 0;
+        this._notifyListening();
+        return true;
+      }
+    }
+    this.retryCount++;
+    this._scheduleRestart(Transcriber.restartDelay('end', this._isIOS, this.language));
+    return false;
+  }
+
+  /**
    * ユーザタップで認識を付け直す。await より先に呼ぶ。ゾンビ engine も止めてから start する。
    * @param {boolean} [fromUserTap]
    * @returns {boolean}
@@ -627,7 +656,7 @@ class Transcriber {
   manualResumeListening(fromUserTap = true) {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return false;
-    if (!fromUserTap && this.awaitingStartAck()) return true;
+    if (!fromUserTap && this.inUserResumeGrace() && this.awaitingStartAck()) return true;
     this.shouldRestart = true;
     this.isListening = true;
     this._hold = false;
