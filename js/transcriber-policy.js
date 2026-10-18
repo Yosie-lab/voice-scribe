@@ -164,7 +164,7 @@ const TranscriberPolicy = {
    * 「字幕が止まった」と UI/needsResume が判断する時間。動いている engine には stop しない。
    * jaStaleStopMs より短くしない。
    */
-  captionStaleMs: 3200,
+  captionStaleMs: 2800,
 
   /**
    * iOS。発話ごとの onend は inIosPhraseGap で除外。
@@ -172,26 +172,26 @@ const TranscriberPolicy = {
   iosCaptionStaleMs: 3000,
 
   /** エンジンが落ちた／ゾンビのときだけ付け直す最短間隔 */
-  stallAutoRestartMs: 1800,
+  stallAutoRestartMs: 1400,
 
   /** 自動 revive の最短間隔（stallAutoRestartMs と同じ） */
-  iosAutoReviveMs: 1800,
+  iosAutoReviveMs: 1400,
 
   /** desktop の reviveLiveCaption 最短間隔 */
-  desktopAutoReviveMs: 1800,
+  desktopAutoReviveMs: 1400,
 
   /** 字幕ヘルスチェック間隔 */
-  captionHealthPollMs: 300,
+  captionHealthPollMs: 250,
 
   /** エンジンが落ちているときだけ付け直す（動作中は continuous に任せる） */
   liveAttachStaleMs: 4000,
 
   /** isZombieEngine: onstart だけ来て仮説が無い */
-  zombieBootDesktopMs: 1800,
+  zombieBootDesktopMs: 1400,
   zombieBootIosMs: 2400,
 
   /** iOS で「再開」を出し始めるまで（確定が動いていない時間） */
-  iosResumeOfferMs: 1800,
+  iosResumeOfferMs: 1400,
 
   /**
    * この回数だけ自動付け直ししたあとは、タップ用の「再開」を出す。

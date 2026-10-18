@@ -608,70 +608,45 @@ assert(!index.includes('v=82'), 'index cache bust left 82');
 assert(!index.includes('v=81'), 'index cache bust left 81');
 assert(!index.includes('v=80'), 'index cache bust left 80');
 assert(!index.includes('v=79'), 'index cache bust left 79');
+assert(!index.includes('v=95'), 'index cache bust left 95');
 assert(!index.includes('v=94'), 'index cache bust left 94');
-assert(index.includes('v=95'), 'index is v95');
-assert(index.includes('transcriber-policy.js'), 'transcriber policy module is loaded');
-assert(index.includes('transcriber-ja-text.js'), 'transcriber ja text module is loaded');
-assert(index.includes('app-recording-health.js'), 'app recording health module is loaded');
-assert(index.includes('app-recording-session.js'), 'app recording session module is loaded');
-assert(app.includes('_finalizeTranscriptWithWhisper'), 'whisper finish lives in session mixin');
-assert(app.includes('_liveRecoveryBlocked'), 'live recovery guard is shared');
-assert(sw.includes("voicescribe-v95"), 'sw cache name');
-assert(!sw.includes('voicescribe-v94'), 'old sw name gone');
-assert(Transcriber.stallAutoRestartMs === 1800, 'dead-engine restart gap');
-assert(Transcriber.captionStaleMs === 3200, 'desktop stall detect avoids cutting live engine');
-assert(Transcriber.iosCaptionStaleMs === 3000, 'ios stall detect');
-assert(Transcriber.jaStaleStopMs > Transcriber.captionStaleMs, 'ja stop stays after stall restart');
-assert(index.includes('app-live-stt-hint'), 'settings explain live STT limits');
-assert(methodBody(transcriberSrc, '  reviveLiveCaption() {').includes('!this.isZombieEngine()'), 'running desktop engine is not stop-unwedged');
-assert(!app.includes('_gestureKickRecognition'), 'record pointerdown does not pre-start STT');
-assert(app.includes('_kickIosRecognitionInRecordGesture'), 'ios STT starts after recording is armed');
-assert(app.includes('_haltLiveTranscription'), 'idle STT is torn down off-session');
-assert(methodBody(app, '_bindLiveTranscriptCallback() {').includes('!this.isRecording'), 'live captions only while recording');
-assert(app.includes('_kickLiveRecognitionAtRecordStart'), 'record start kicks STT once');
-assert(app.includes('_autoRecoverLiveStt'), 'app auto-recovers stalled STT');
-assert(app.includes('_bootstrapLiveTranscriptionAfterMic'), 'mic open bootstraps live STT');
-assert(!sw.includes('voicescribe-v82'), 'old sw name gone');
 const manifest = fs.readFileSync(path.join(root, 'manifest.json'), 'utf8');
+const recorderSrc = fs.readFileSync(path.join(root, 'js/recorder.js'), 'utf8');
 assert(!manifest.includes('portrait-primary'), 'PWA does not lock portrait-primary');
 assert(!manifest.includes('"orientation"'), 'manifest does not declare orientation lock');
 assert(manifest.includes('"id": "./"'), 'manifest id stays stable for iOS home screen');
 assert(!app.includes('navigator.wakeLock.request'), 'wake lock does not block device lock');
 assert(!app.includes('screen.orientation.unlock'), 'no orientation unlock calls on iOS');
 assert(app.includes('_syncViewportHeight'), 'viewport resync on rotate for iOS Safari');
-assert(app.includes("APP_BUILD = 'v95'"), 'app build tag is v95');
-assert(index.includes('文字起こしの二段構え'), 'settings explain two-phase STT');
-assert(transcriberSrc.includes('msSinceCaptionChange'), 'stall uses caption content time');
-assert(transcriberSrc.includes('polishJaCommitted'), 'long ja repeats are polished');
-assert(!css.includes('caption-stalled-recording'), 'no resume UI class in css');
-assert(!index.includes('resume-reading-header-btn'), 'header resume button removed');
-assert(!index.includes('resume-reading-btn'), 'deck resume button removed');
-assert(!index.includes('>再開<'), 'no manual STT resume label in html');
-assert(transcriberSrc.includes('manualResumeListening'), 'internal restart path stays available');
 assert(transcriberSrc.includes('shouldShowManualResume'), 'transcriber keeps manual resume hook');
-assert(transcriberSrc.includes('inIosPhraseGap'), 'ios phrase gap avoids false stall');
-assert(transcriberSrc.includes('iosCaptionStaleMs'), 'ios has its own stale threshold');
-assert(app.includes('_stageDraftFromStop'), 'stop shows draft play before save finishes');
-assert(transcriberSrc.includes('jaOverlapMax'), 'long ja overlap cap is named');
-assert(transcriberSrc.includes('collapseAdjacentJaRepeats'), 'adjacent ja repeats collapse after commit');
 assert(app.includes('app-ios-rotation-hint'), 'settings explain iPhone rotation limits');
-assert(app.includes('sw.js?v=95'), 'service worker registration is cache-busted');
-assert(transcriberSrc.includes('stallAutoRestartMs'), 'revive uses unified stall restart ms');
-assert(!app.includes('onListeningChange'), 'listening change does not feedback auto-recover');
-assert(transcriberSrc.includes('isZombieEngine'), 'zombie onstart without captions is detectable');
-assert(app.includes('isZombieEngine()'), 'app reattaches when recognition is zombie');
-assert(transcriberSrc.includes('_cleanLiveInterim'), 'interim repeat uses the commit dedupe window');
-assert(transcriberSrc.includes('setContinuedPrefix'), 'resume prefix is excluded from dedupe anchor');
-assert(transcriberSrc.includes('iosCaptionBootMs'), 'ios waits longer before caption stall revive');
 assert(css.includes('--app-height'), 'css uses dynamic viewport height');
 assert(!sw.includes('voicescribe-v65'), 'older sw name gone');
-const micCalls = (src) => (src.match(/\.getUserMedia\s*\(/g) || []).length;
-const recorderSrc = fs.readFileSync(path.join(root, 'js/recorder.js'), 'utf8');
-assert(micCalls(viz) === 0, 'visualizer does not open a mic');
-assert(micCalls(app) === 0, 'app must not open a mic');
-assert(micCalls(transcriberSrc) === 0, 'transcriber must not open a mic');
-assert(micCalls(recorderSrc) === 2, 'still one mic open path');
-assert(!recorderSrc.includes('noiseSuppression: false'), 'no exact NS off before recognition');
+assert(!sw.includes('voicescribe-v95'), 'previous sw cache name gone');
+
+const UIManager = require('../js/ui.js');
+const { runMandatorySkills, BUILD } = require('./harness-skills');
+const skillCtx = {
+  root,
+  index,
+  sw,
+  css,
+  app,
+  transcriberSrc,
+  recorderSrc,
+  viz,
+  manifest,
+  assert,
+  methodBody,
+  Transcriber,
+  AudioRecorder,
+  UIManager,
+  BUILD,
+  failed: 0
+};
+console.log('\n## mandatory 7 harness skills');
+runMandatorySkills(skillCtx);
+failed += skillCtx.failed;
 assert(transcriberSrc.includes("this.language = 'ja-JP'"), 'default language stays ja-JP');
 assert(transcriberSrc.includes('this.recognition.lang = this.language'), 'recognition.lang follows setLanguage');
 function methodBody(src, signature) {
@@ -709,7 +684,6 @@ assert(transcriberSrc.includes('isCaptionStalled'), 'zombie caption detection ex
 assert(transcriberSrc.includes('reviveLiveCaption'), 'caption can recover without stopping recorder');
 assert(app.includes('_checkCaptionHealth'), 'caption health runs without the level meter');
 
-const UIManager = require('../js/ui.js');
 assert(UIManager.transcriptChrome(4, true).showClear === true, 'clear stays visible while recording');
 assert(UIManager.transcriptChrome(4, true).showObsidian === false, 'obsidian stays after stop');
 assert(UIManager.transcriptChrome(4, false).showClear === true, 'clear shows after stop when there is text');
