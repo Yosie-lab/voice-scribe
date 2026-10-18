@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v95';
+const APP_BUILD = 'v96';
 
 class VoiceScribeApp {
   constructor() {
@@ -1137,7 +1137,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=95');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=96');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();
