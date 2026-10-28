@@ -494,6 +494,9 @@ class UIManager {
     const testBtn = document.getElementById('test-groq-btn');
     const saveBtn = document.getElementById('save-settings-btn');
     const statusBox = document.getElementById('settings-status-box');
+    const offlineToggle = document.getElementById('offline-whisper-toggle');
+    const offlineModel = document.getElementById('offline-whisper-model');
+    const offlineProgress = document.getElementById('offline-whisper-progress');
 
     if (!settingsBtn || !this.settingsModal) return;
 
@@ -510,7 +513,42 @@ class UIManager {
       fillObsidianFields();
     };
 
+    const live = () => (window.app && window.app.whisperLive) ? window.app.whisperLive : null;
+
+    const fillOfflineFields = () => {
+      const engine = live();
+      if (!engine) return;
+      if (offlineToggle) offlineToggle.checked = engine.isEnabled();
+      if (offlineModel) offlineModel.value = engine.modelPreference();
+      const ua = navigator.userAgent || '';
+      const ios = /iPhone|iPad|iPod/.test(ua)
+        || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      if (offlineModel) {
+        const small = offlineModel.querySelector('option[value="small"]');
+        if (small) small.disabled = ios;
+      }
+    };
+
+    const persistOfflineFields = () => {
+      const engine = live();
+      if (!engine || !offlineToggle) return;
+      const preference = offlineModel ? offlineModel.value : 'auto';
+      const was = engine.isEnabled();
+      engine.saveSettings(offlineToggle.checked, preference);
+      if (offlineToggle.checked) {
+        engine.preload().catch((error) => {
+          console.warn('オフラインWhisperの準備に失敗:', error);
+        });
+        if (!was && window.app && window.app.ui) {
+          window.app.ui.showToast('次の録音からオフラインWhisperを使います', 'info', 2800);
+        }
+      }
+    };
+
     fillObsidianFields();
+    fillOfflineFields();
+    if (offlineToggle) offlineToggle.addEventListener('change', persistOfflineFields);
+    if (offlineModel) offlineModel.addEventListener('change', persistOfflineFields);
     if (vaultInput) vaultInput.addEventListener('change', persistObsidianFields);
     if (folderInput) folderInput.addEventListener('change', persistObsidianFields);
 
@@ -520,6 +558,7 @@ class UIManager {
         if (keyInput) keyInput.value = window.app.whisper.apiKey || '';
       }
       fillObsidianFields();
+      fillOfflineFields();
       if (statusBox) statusBox.innerHTML = '';
       if (window.app && typeof window.app.refreshDiagnostics === 'function') {
         window.app.refreshDiagnostics();
@@ -582,6 +621,7 @@ class UIManager {
           window.app.whisper.saveApiKey(key);
         }
         persistObsidianFields();
+        persistOfflineFields();
 
         this.showToast('💾 設定を保存しました', 'success');
         closeSettings();
@@ -592,6 +632,25 @@ class UIManager {
   /**
    * Whisper解析中オーバーレイを表示
    */
+  /**
+   * オフライン Whisper の取得・推論状態。録音中か取得中だけ出す。
+   * @param {string} text
+   * @param {boolean} visible
+   */
+  setWhisperLiveStatus(text, visible) {
+    const live = document.getElementById('whisper-live-status');
+    const settings = document.getElementById('offline-whisper-progress');
+    if (settings) settings.textContent = text || '';
+    if (!live) return;
+    if (!visible || !text) {
+      live.hidden = true;
+      live.textContent = '';
+      return;
+    }
+    live.hidden = false;
+    live.textContent = text;
+  }
+
   showWhisperOverlay() {
     if (this.whisperOverlay) {
       this.whisperOverlay.classList.add('active');

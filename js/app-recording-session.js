@@ -36,9 +36,13 @@ const VoiceScribeRecordingSession = {
    * @private
    */
   async _startRecording(options) {
+    const armOffline = !!(this.whisperLive && this.whisperLive.isEnabled());
+    if (armOffline) this.whisperLive.primeFromUserGesture();
     if (this._stopPromise) await this._stopPromise;
     if (this.isRecording || this._starting) return;
     this._starting = true;
+    this._offlineWhisperFallback = false;
+    this._offlineWhisperSession = armOffline;
     const continueDraft = !!(options && options.continueDraft);
     try {
     this._stopDraftPlayback();
@@ -119,7 +123,7 @@ const VoiceScribeRecordingSession = {
       placeholderEl.style.display = 'none';
     }
 
-    this._kickIosRecognitionInRecordGesture();
+    if (!this._usesOfflineWhisper()) this._kickIosRecognitionInRecordGesture();
 
     let stream = null;
     try {
@@ -147,10 +151,23 @@ const VoiceScribeRecordingSession = {
 
     if (!this.isRecording) return;
 
-    this._reattachLiveSttAfterMic();
-    this._ensureLiveRecognition();
-    this._startSpeechWatch();
-    this._startCaptionWatch();
+    if (this._usesOfflineWhisper()) {
+      const started = await this._startOfflineWhisper(stream);
+      if (!started && this.isRecording) {
+        this._offlineWhisperFallback = true;
+        this.ui.showToast('オフラインWhisperを開始できなかったので、Web Speechに戻します。', 'info', 4000);
+        this._bootstrapLiveTranscriptionAfterMic();
+        this._reattachLiveSttAfterMic();
+        this._ensureLiveRecognition();
+        this._startSpeechWatch();
+        this._startCaptionWatch();
+      }
+    } else {
+      this._reattachLiveSttAfterMic();
+      this._ensureLiveRecognition();
+      this._startSpeechWatch();
+      this._startCaptionWatch();
+    }
 
     if (this.visualizer && stream) {
       this.visualizer.stopIdleAnimation();
@@ -197,6 +214,9 @@ const VoiceScribeRecordingSession = {
    */
   async _finalizeTranscriptWithWhisper(liveTranscript, audioBlob, language, interrupted, joined) {
     let finalTranscript = liveTranscript;
+    if (this._usesOfflineWhisper() && (liveTranscript || '').trim()) {
+      return finalTranscript;
+    }
     if (interrupted || !joined || !this.whisper.hasApiKey() || !audioBlob) {
       return finalTranscript;
     }
@@ -234,6 +254,13 @@ const VoiceScribeRecordingSession = {
       this._recoverTimer = null;
     }
 
+    if (this._usesOfflineWhisper() && this.whisperLive) {
+      try {
+        await this.whisperLive.finish();
+      } catch (error) {
+        console.warn('オフラインWhisperの締めに失敗:', error);
+      }
+    }
     let transcript = this._readLiveTranscript();
     const language = this._activeLanguage();
     const sessionId = this.currentRecordingId;
@@ -408,6 +435,26 @@ const VoiceScribeRecordingSession = {
    * 録音タイマーを開始
    * @private
    */
+  /**
+   * 既存ストリームにオフライン Whisper を載せる。Web Speech は起動しない。
+   * @param {MediaStream|null} stream
+   * @returns {Promise<boolean>}
+   * @private
+   */
+  async _startOfflineWhisper(stream) {
+    if (!this.whisperLive || !stream) return false;
+    const appLang = this._activeLanguage();
+    this.whisperLive.setLanguage(WhisperLiveText.whisperLanguage(appLang));
+    this.whisperLive.setPrefix(this._resumePrefix || '');
+    try {
+      return await this.whisperLive.start(stream);
+    } catch (error) {
+      console.warn('オフラインWhisper開始:', error);
+      return false;
+    }
+  }
+,
+
   _startTimer() {
     this._stopTimer();
     const base = this._priorDuration || 0;

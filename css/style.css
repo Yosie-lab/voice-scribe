@@ -1443,3 +1443,30 @@ body::before {
   border-color: #ef4444;
   color: white;
 }
+
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.settings-check input {
+  width: 18px;
+  height: 18px;
+  accent-color: #00c2d1;
+}
+
+.whisper-live-status {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--color-text-muted);
+}
+
+.whisper-live-status[hidden] {
+  display: none;
+}

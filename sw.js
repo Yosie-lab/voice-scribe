@@ -1,7 +1,8 @@
 // VoiceScribe Service Worker
 // Network-First戦略で常に最新アセットを配信
 
-const CACHE_NAME = 'voicescribe-v95';
+const CACHE_NAME = 'voicescribe-v96';
+const MODEL_CACHE = 'voicescribe-whisper-models-v1';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -14,6 +15,10 @@ const ASSETS_TO_CACHE = [
   './js/transcriber-ja-text.js',
   './js/transcriber.js',
   './js/whisper.js',
+  './js/whisper-live-text.js',
+  './js/whisper-live.js',
+  './js/whisper-live-worker.js',
+  './js/whisper-pcm-worklet.js',
   './js/storage.js',
   './js/visualizer.js',
   './js/obsidian.js',
@@ -39,7 +44,7 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames
-          .filter((name) => name !== CACHE_NAME)
+          .filter((name) => name !== CACHE_NAME && name !== MODEL_CACHE && name !== 'transformers-cache')
           .map((name) => caches.delete(name))
       );
     }).then(() => self.clients.claim())
@@ -47,8 +52,46 @@ self.addEventListener('activate', (event) => {
 });
 
 // Network First戦略: 常に最新をサーバーから取得し、ネットワーク不通時のみキャッシュを使用
+function isWhisperRuntimeRequest(url) {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname;
+    if (host === 'huggingface.co' || host.endsWith('.huggingface.co')) return true;
+    if (host === 'cdn.jsdelivr.net' && /\/(?:@huggingface\/transformers|onnxruntime-web)\//.test(parsed.pathname)) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+async function whisperRuntimeFetch(request) {
+  const cache = await caches.open(MODEL_CACHE);
+  const hit = await cache.match(request);
+  if (hit) return hit;
+  const network = await fetch(request);
+  if (network && network.ok) {
+    try {
+      await cache.put(request, network.clone());
+    } catch {
+      // iOS の Cache Storage 上限。transformers-cache 側が残っていればオフラインを続ける。
+    }
+  }
+  return network;
+}
+
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+
+  if (isWhisperRuntimeRequest(event.request.url)) {
+    event.respondWith(whisperRuntimeFetch(event.request).catch(async () => {
+      const loose = await caches.match(event.request);
+      if (loose) return loose;
+      return new Response('', { status: 504, statusText: 'whisper model offline' });
+    }));
+    return;
+  }
 
   event.respondWith(
     fetch(event.request)
