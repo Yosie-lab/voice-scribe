@@ -1,7 +1,8 @@
 /**
  * VoiceScribe — Groq Whisper 音声認識サービス (WhisperService)
  * 録音されたクリアな音声データ（Blob）を Groq の超高速 LPU (Whisper Large v3) に送信し、
- * 抜け落ちのない100%忠実な全文文字起こしを0.5秒〜1秒の爆速で生成
+ * 抜け落ちのない100%忠実な全文文字起こしを0.5秒〜1秒の爆速で生成。
+ * 録音中のオフラインライブは js/whisper-live.js。ここは停止後のクラウド仕上げだけ。
  */
 
 class WhisperService {

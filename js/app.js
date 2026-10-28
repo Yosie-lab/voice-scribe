@@ -4,7 +4,7 @@
  */
 
 /** @type {string} 設定画面とコンソールで確認するビルド番号 */
-const APP_BUILD = 'v95';
+const APP_BUILD = 'v96';
 
 class VoiceScribeApp {
   constructor() {
@@ -12,6 +12,9 @@ class VoiceScribeApp {
     this.recorder = new AudioRecorder();
     this.transcriber = new Transcriber();
     this.whisper = new WhisperService();
+    this.whisperLive = new WhisperLive();
+    this._offlineWhisperFallback = false;
+    this._offlineWhisperSession = false;
     this.ui = null;
     this.visualizer = null;
 
@@ -80,6 +83,7 @@ class VoiceScribeApp {
       // UI初期化
       this.ui = new UIManager();
       this.ui.initNavigation();
+      this._bindOfflineWhisper();
 
       // ビジュアライザー初期化
       const canvas = document.getElementById('visualizer-canvas');
@@ -226,12 +230,37 @@ class VoiceScribeApp {
    */
   _clearTranscript() {
     this._transcriptEpoch += 1;
+    if (this._usesOfflineWhisper()) {
+      this.whisperLive.clearText();
+      this._bestTranscript = '';
+      this.ui.updateTranscript('', '', this.isRecording);
+      return;
+    }
     const keepListening = this.isRecording && !this._userPaused && this.transcriber.isListening;
     this.transcriber.reset();
     if (keepListening) {
       this.transcriber.continueListening();
     }
     this.ui.updateTranscript('', '', this.isRecording);
+  }
+
+  /**
+   * オフライン Whisper の字幕とダウンロード表示。Web Speech が標準。
+   * @private
+   */
+  _bindOfflineWhisper() {
+    if (!this.whisperLive) return;
+    this.whisperLive.onTranscript = (finalText) => {
+      if (!this.isRecording || this._userPaused || !this._usesOfflineWhisper()) return;
+      const text = finalText || '';
+      this._bestTranscript = this._longerText(this._bestTranscript, text);
+      this.ui.updateTranscript(text, '', true);
+    };
+    this.whisperLive.onStatus = (info) => {
+      const text = info && info.text ? info.text : '';
+      const busy = !!(info && info.busy);
+      if (this.ui) this.ui.setWhisperLiveStatus(text, busy || this.isRecording);
+    };
   }
 
 
@@ -379,6 +408,12 @@ class VoiceScribeApp {
 
     if (!this.isRecording || gen !== this._recoverGen || this._userPaused) return;
     this._recoverAttempts = 0;
+    if (this._usesOfflineWhisper()) {
+      const stream = this.recorder.stream;
+      if (this.whisperLive && stream) await this.whisperLive.attachStream(stream);
+      this.ui.setRecordingStatus('recording');
+      return;
+    }
     // マイクを取り直したあとに認識を付ける。先に start すると desktop Chrome は abort する。
     if (captureDown && !this._isIOSDevice()) {
       this.transcriber.continueListening();
@@ -1137,7 +1172,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Service Worker登録と自動更新
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js?v=95');
+      const registration = await navigator.serviceWorker.register('./sw.js?v=96');
       console.log('Service Worker 登録完了:', registration.scope);
       if (registration.update) {
         registration.update();

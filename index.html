@@ -13,13 +13,13 @@
   <title>VoiceScribe — 文字起こしボイスレコーダー</title>
 
   <!-- PWAマニフェスト -->
-  <link rel="manifest" href="manifest.json?v=95">
+  <link rel="manifest" href="manifest.json?v=96">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" sizes="192x192" href="icons/icon-192.png">
   <link rel="apple-touch-icon" sizes="512x512" href="icons/icon-512.png">
 
   <!-- スタイルシート -->
-  <link rel="stylesheet" href="css/style.css?v=95">
+  <link rel="stylesheet" href="css/style.css?v=96">
 
   <!-- ファビコン -->
   <link rel="icon" href="icons/icon-192.png" type="image/png">
@@ -95,6 +95,7 @@
       <div class="transcript-area prominent" id="transcript-area">
         <div class="transcript-header-bar">
           <span class="transcript-title-label">📝 リアルタイム文字起こし</span>
+          <p class="whisper-live-status" id="whisper-live-status" hidden></p>
           <div class="header-bar-actions">
             <button class="action-pill-btn" id="quick-copy-btn" title="テキストをコピー">📋 コピー</button>
             <button class="action-pill-btn continue-pill" id="continue-recording-btn" title="同じ録音の続きを録る" style="display:none;">続きを録音</button>
@@ -260,6 +261,24 @@
           </div>
 
           <div class="settings-section">
+            <label class="settings-check" for="offline-whisper-toggle">
+              <input type="checkbox" id="offline-whisper-toggle">
+              <span>オフラインWhisper（試験）</span>
+            </label>
+            <label class="settings-label" for="offline-whisper-model">モデル</label>
+            <select id="offline-whisper-model" class="settings-input">
+              <option value="auto">自動（iPhoneはtiny）</option>
+              <option value="tiny">tiny（約45MB）</option>
+              <option value="base">base（約82MB）</option>
+              <option value="small">small（約255MB・メモリに余裕がある端末）</option>
+            </select>
+            <p class="settings-hint" id="offline-whisper-hint">
+              オフのときライブ字幕は今まで通り Web Speech です。オンにすると、録音中のマイクを端末内の Whisper（日本語）で区切って文字にします。初回だけモデルをダウンロードし、あとから通信を切っても動きます。iPhone の初期値は tiny（量子化）です。WebGPU が使える端末だけ fp16、それ以外は WASM です。
+            </p>
+            <p class="settings-hint" id="offline-whisper-progress"></p>
+          </div>
+
+          <div class="settings-section">
             <label class="settings-label" for="obsidian-vault-input">📥 Obsidian Vault</label>
             <input
               type="text"
@@ -289,7 +308,7 @@
             <p class="settings-hint" id="app-build-info">アプリ情報を読み込み中…</p>
             <p class="settings-hint" id="app-live-stt-hint">
               <b>文字起こしの二段構え</b><br>
-              ① <b>録音中</b> … ブラウザの Web Speech API（APIキー不要）でリアルタイム表示<br>
+              ① <b>録音中</b> … ブラウザの Web Speech API（APIキー不要）。設定の「オフラインWhisper（試験）」を入れると端末内 Whisper に切り替わります<br>
               ② <b>録音停止後</b> … Groq API キーがあるときだけ Whisper で仕上げ（上のキー設定）<br>
               ライブは <b>PC Chrome</b> または <b>iPhone Safari（ホーム画面追加）</b> がおすすめです。録音開始を押してから話してください。
             </p>
@@ -322,17 +341,19 @@
   </div>
 
   <!-- ===== JavaScript モジュール ===== -->
-  <script src="js/storage.js?v=95"></script>
-  <script src="js/recorder.js?v=95"></script>
-  <script src="js/transcriber-policy.js?v=95"></script>
-  <script src="js/transcriber-ja-text.js?v=95"></script>
-  <script src="js/transcriber.js?v=95"></script>
-  <script src="js/whisper.js?v=95"></script>
-  <script src="js/visualizer.js?v=95"></script>
-  <script src="js/obsidian.js?v=95"></script>
-  <script src="js/ui.js?v=95"></script>
-  <script src="js/app-recording-health.js?v=95"></script>
-  <script src="js/app-recording-session.js?v=95"></script>
-  <script src="js/app.js?v=95"></script>
+  <script src="js/storage.js?v=96"></script>
+  <script src="js/recorder.js?v=96"></script>
+  <script src="js/transcriber-policy.js?v=96"></script>
+  <script src="js/transcriber-ja-text.js?v=96"></script>
+  <script src="js/transcriber.js?v=96"></script>
+  <script src="js/whisper.js?v=96"></script>
+  <script src="js/whisper-live-text.js?v=96"></script>
+  <script src="js/whisper-live.js?v=96"></script>
+  <script src="js/visualizer.js?v=96"></script>
+  <script src="js/obsidian.js?v=96"></script>
+  <script src="js/ui.js?v=96"></script>
+  <script src="js/app-recording-health.js?v=96"></script>
+  <script src="js/app-recording-session.js?v=96"></script>
+  <script src="js/app.js?v=96"></script>
 </body>
 </html>

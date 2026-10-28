@@ -3,6 +3,19 @@
  */
 const VoiceScribeRecordingHealth = {
   /**
+   * 設定のオフライン Whisper が、この録音のライブ経路か。
+   * モデル開始に失敗した録音だけ Web Speech に戻す。
+   * @returns {boolean}
+   * @private
+   */
+  _usesOfflineWhisper() {
+    if (this._offlineWhisperFallback) return false;
+    if (this.isRecording || this._starting) return !!this._offlineWhisperSession;
+    return !!(this.whisperLive && this.whisperLive.isEnabled());
+  }
+,
+
+  /**
    * ライブ字幕の onResult を配線する。
    * @private
    */
@@ -19,6 +32,7 @@ const VoiceScribeRecordingHealth = {
    * @private
    */
   _haltLiveTranscription() {
+    if (this.whisperLive) this.whisperLive.stopCapture();
     this._stopCaptionWatch();
     this._stopSpeechWatch();
     this._stopIosSttWarmup();
@@ -85,6 +99,7 @@ const VoiceScribeRecordingHealth = {
    * @private
    */
   _bootstrapLiveTranscriptionAfterMic() {
+    if (this._usesOfflineWhisper()) return;
     if (!this.isRecording || this._userPaused) return;
     const ios = this._isIOSDevice();
     if (!this.transcriber.startBeforeRecorder) {
@@ -110,6 +125,7 @@ const VoiceScribeRecordingHealth = {
    * @private
    */
   _kickIosRecognitionInRecordGesture() {
+    if (this._usesOfflineWhisper()) return;
     if (!this.transcriber.startBeforeRecorder || !this.isRecording) return;
     this._bindLiveTranscriptCallback();
     this.transcriber.setLanguage(this._activeLanguage());
@@ -122,6 +138,7 @@ const VoiceScribeRecordingHealth = {
    * @private
    */
   _scheduleIosPostMicWarmup() {
+    if (this._usesOfflineWhisper()) return;
     if (this._iosSttWarmupTimer) clearTimeout(this._iosSttWarmupTimer);
     this._iosSttWarmupTimer = setTimeout(() => {
       this._iosSttWarmupTimer = null;
@@ -158,6 +175,7 @@ const VoiceScribeRecordingHealth = {
 ,
 
   _kickLiveRecognitionAtRecordStart() {
+    if (this._usesOfflineWhisper()) return false;
     if (this.transcriber.startBeforeRecorder) this._armRecognitionBootGrace();
     let started = false;
     try {
@@ -247,6 +265,12 @@ const VoiceScribeRecordingHealth = {
    * @private
    */
   _readLiveTranscript() {
+    if (this._usesOfflineWhisper() && this.whisperLive) {
+      const offline = (this.whisperLive.getTranscript() || '').trim();
+      const transcript = this._longerText(offline, this._bestTranscript);
+      if (transcript) this._bestTranscript = transcript;
+      return transcript;
+    }
     let transcript = (this.transcriber.getFullTranscript() || '').trim();
     if (!transcript) {
       const textEl = document.getElementById('transcript-text');
@@ -628,6 +652,7 @@ const VoiceScribeRecordingHealth = {
    * @private
    */
   _armRecognitionGesture() {
+    if (this._usesOfflineWhisper()) return;
     if (this._recognitionGesture) return;
     const onPointer = (event) => {
       if (!this.isRecording || this._userPaused) {
@@ -663,12 +688,13 @@ const VoiceScribeRecordingHealth = {
     const pausing = !this._userPaused && this.recorder.state !== 'paused';
 
     if (pausing) {
+      if (this._usesOfflineWhisper() && this.whisperLive) this.whisperLive.setPaused(true);
       if (!this.recorder.pause()) {
         this.recorder.state = 'paused';
         this.recorder.pauseStartTime = Date.now();
       }
       this._userPaused = true;
-      this.transcriber.stop();
+      if (!this._usesOfflineWhisper()) this.transcriber.stop();
       this._stopTimer();
       this.ui.setRecordingStatus('paused');
       if (pauseBtn) pauseBtn.textContent = '▶️';
@@ -678,7 +704,9 @@ const VoiceScribeRecordingHealth = {
 
     this._userPaused = false;
     const ios = this._isIOSDevice();
-    if (ios) this.transcriber.continueListening();
+    const offline = this._usesOfflineWhisper();
+    if (offline && this.whisperLive) this.whisperLive.setPaused(false);
+    if (ios && !offline) this.transcriber.continueListening();
     let stream = this.recorder.stream;
     if (!this.recorder.resume()) {
       try {
@@ -687,7 +715,8 @@ const VoiceScribeRecordingHealth = {
         console.warn('再開に失敗:', error);
         this._userPaused = true;
         this.recorder.state = 'paused';
-        if (ios) this.transcriber.stop();
+        if (ios && !offline) this.transcriber.stop();
+        if (offline && this.whisperLive) this.whisperLive.setPaused(true);
         this.ui.setRecordingStatus('paused');
         if (pauseBtn) pauseBtn.textContent = '▶️';
         this.ui.showToast('マイクを再開できませんでした。', 'error');
@@ -695,7 +724,7 @@ const VoiceScribeRecordingHealth = {
       }
     }
 
-    if (!ios) this.transcriber.continueListening();
+    if (!ios && !offline) this.transcriber.continueListening();
     this._startTimer();
     this.ui.setRecordingStatus('recording');
     if (pauseBtn) pauseBtn.textContent = '⏸️';
@@ -703,6 +732,7 @@ const VoiceScribeRecordingHealth = {
       this.visualizer.stopIdleAnimation();
       await this.visualizer.connectStream(stream);
     }
+    if (offline && this.whisperLive && stream) await this.whisperLive.attachStream(stream);
     this._autoRecoverLiveStt();
   }
 ,
@@ -713,6 +743,21 @@ const VoiceScribeRecordingHealth = {
    */
   _autoRecoverLiveStt() {
     if (!this.isRecording || this._userPaused || document.visibilityState === 'hidden') return;
+    if (this._usesOfflineWhisper()) {
+      if (this.recorder && this.recorder.needsRecovery()) {
+        this.recorder.ensureCapture().then((stream) => {
+          if (!this.isRecording || this._userPaused || !stream) return;
+          if (this.visualizer && stream) {
+            this.visualizer.stopIdleAnimation();
+            void this.visualizer.connectStream(stream);
+          }
+          if (this.whisperLive) void this.whisperLive.attachStream(stream);
+        }).catch((error) => {
+          console.warn('マイク自動復旧:', error);
+        });
+      }
+      return;
+    }
     const t = this.transcriber;
     if (this.recorder && this.recorder.needsRecovery()) {
       this.recorder.ensureCapture().then((stream) => {
@@ -746,6 +791,7 @@ const VoiceScribeRecordingHealth = {
    * @private
    */
   _reattachLiveSttAfterMic() {
+    if (this._usesOfflineWhisper()) return;
     if (!this.isRecording || this._userPaused) return;
     if (this.transcriber.inIosPhraseGap && this.transcriber.inIosPhraseGap()) return;
     if (!this.recorder || this.recorder.state !== 'recording') return;
@@ -766,6 +812,7 @@ const VoiceScribeRecordingHealth = {
    * @private
    */
   _ensureLiveRecognition() {
+    if (this._usesOfflineWhisper()) return;
     if (!this.isRecording || this._userPaused) return;
     const t = this.transcriber;
     if (t.inUserResumeGrace()) {
@@ -795,6 +842,7 @@ const VoiceScribeRecordingHealth = {
    * @private
    */
   _checkCaptionHealth() {
+    if (this._usesOfflineWhisper()) return;
     if (!this.isRecording || this._userPaused || document.visibilityState === 'hidden') return;
     const t = this.transcriber;
     if (t._hold) {
@@ -832,6 +880,7 @@ const VoiceScribeRecordingHealth = {
    * @private
    */
   _startSpeechWatch() {
+    if (this._usesOfflineWhisper()) return;
     this._stopSpeechWatch();
     this._speechProfile = Transcriber.speechWatchProfile(
       this.transcriber.language,
@@ -863,6 +912,7 @@ const VoiceScribeRecordingHealth = {
    * @private
    */
   _startCaptionWatch() {
+    if (this._usesOfflineWhisper()) return;
     this._stopCaptionWatch();
     this._captionWatch = setInterval(
       () => this._checkCaptionHealth(),

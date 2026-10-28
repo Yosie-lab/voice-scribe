@@ -18,6 +18,7 @@ global.document = { visibilityState: 'visible' };
 
 const Transcriber = require('../js/transcriber.js');
 const AudioRecorder = require('../js/recorder.js');
+const WhisperLiveText = require('../js/whisper-live-text.js');
 
 const QUIET = '今日はいい天気ですね';
 const FAST = '明日の会議は三時から開始で資料は事前に共有してください';
@@ -609,15 +610,19 @@ assert(!index.includes('v=81'), 'index cache bust left 81');
 assert(!index.includes('v=80'), 'index cache bust left 80');
 assert(!index.includes('v=79'), 'index cache bust left 79');
 assert(!index.includes('v=94'), 'index cache bust left 94');
-assert(index.includes('v=95'), 'index is v95');
+assert(!index.includes('v=95'), 'index cache bust left 95');
+assert(index.includes('v=96'), 'index is v96');
 assert(index.includes('transcriber-policy.js'), 'transcriber policy module is loaded');
 assert(index.includes('transcriber-ja-text.js'), 'transcriber ja text module is loaded');
 assert(index.includes('app-recording-health.js'), 'app recording health module is loaded');
 assert(index.includes('app-recording-session.js'), 'app recording session module is loaded');
 assert(app.includes('_finalizeTranscriptWithWhisper'), 'whisper finish lives in session mixin');
 assert(app.includes('_liveRecoveryBlocked'), 'live recovery guard is shared');
-assert(sw.includes("voicescribe-v95"), 'sw cache name');
+assert(sw.includes("voicescribe-v96"), 'sw cache name');
+assert(!sw.includes('voicescribe-v95'), 'old sw name gone');
 assert(!sw.includes('voicescribe-v94'), 'old sw name gone');
+assert(sw.includes('voicescribe-whisper-models-v1'), 'whisper model cache survives sw updates');
+assert(sw.includes("'transformers-cache'"), 'transformers browser cache is not wiped');
 assert(Transcriber.stallAutoRestartMs === 1800, 'dead-engine restart gap');
 assert(Transcriber.captionStaleMs === 3200, 'desktop stall detect avoids cutting live engine');
 assert(Transcriber.iosCaptionStaleMs === 3000, 'ios stall detect');
@@ -639,7 +644,7 @@ assert(manifest.includes('"id": "./"'), 'manifest id stays stable for iOS home s
 assert(!app.includes('navigator.wakeLock.request'), 'wake lock does not block device lock');
 assert(!app.includes('screen.orientation.unlock'), 'no orientation unlock calls on iOS');
 assert(app.includes('_syncViewportHeight'), 'viewport resync on rotate for iOS Safari');
-assert(app.includes("APP_BUILD = 'v95'"), 'app build tag is v95');
+assert(app.includes("APP_BUILD = 'v96'"), 'app build tag is v96');
 assert(index.includes('文字起こしの二段構え'), 'settings explain two-phase STT');
 assert(transcriberSrc.includes('msSinceCaptionChange'), 'stall uses caption content time');
 assert(transcriberSrc.includes('polishJaCommitted'), 'long ja repeats are polished');
@@ -655,7 +660,7 @@ assert(app.includes('_stageDraftFromStop'), 'stop shows draft play before save f
 assert(transcriberSrc.includes('jaOverlapMax'), 'long ja overlap cap is named');
 assert(transcriberSrc.includes('collapseAdjacentJaRepeats'), 'adjacent ja repeats collapse after commit');
 assert(app.includes('app-ios-rotation-hint'), 'settings explain iPhone rotation limits');
-assert(app.includes('sw.js?v=95'), 'service worker registration is cache-busted');
+assert(app.includes('sw.js?v=96'), 'service worker registration is cache-busted');
 assert(transcriberSrc.includes('stallAutoRestartMs'), 'revive uses unified stall restart ms');
 assert(!app.includes('onListeningChange'), 'listening change does not feedback auto-recover');
 assert(transcriberSrc.includes('isZombieEngine'), 'zombie onstart without captions is detectable');
@@ -1135,6 +1140,79 @@ assert(deskResume.recognition.continuous === true, 'desktop ja resume stays cont
 assert(deskResume.finalTranscript.includes(LINE), 'desktop resume keeps committed text');
 deskResume.stop();
 
+function proveOfflineWhisper() {
+  assert(WhisperLiveText.blocksWebSpeech(false) === false, 'web speech stays on when the toggle is off');
+  assert(WhisperLiveText.blocksWebSpeech(undefined) === false, 'missing toggle does not block web speech');
+  assert(WhisperLiveText.blocksWebSpeech(true) === true, 'offline whisper blocks web speech');
+  assert(WhisperLiveText.readEnabled({ getItem: () => null }) === false, 'offline whisper defaults off');
+  assert(WhisperLiveText.readEnabled({ getItem: () => '1' }) === true, 'stored 1 enables offline whisper');
+  assert(WhisperLiveText.WINDOW_SEC === 4 && WhisperLiveText.HOP_SEC === 3, 'chunks are 4s with 1s overlap');
+  assert(WhisperLiveText.pickModel('auto', { ios: true }) === 'tiny', 'iPhone auto model is tiny');
+  assert(WhisperLiveText.pickModel('small', { ios: true }) === 'tiny', 'iPhone cannot select small');
+  assert(WhisperLiveText.pickModel('base', { ios: true }) === 'base', 'iPhone may select base');
+  assert(WhisperLiveText.pickModel('auto', { ios: false, deviceMemory: 8 }) === 'base', 'desktop auto stays at base');
+  assert(WhisperLiveText.pickModel('small', { ios: false, deviceMemory: 4 }) === 'base', 'small is refused under 8GB');
+  assert(WhisperLiveText.pickModel('small', { ios: false, deviceMemory: 8 }) === 'small', 'small is allowed when memory is enough');
+  assert(WhisperLiveText.whisperLanguage('ja-JP') === 'ja', 'japanese app language maps to ja');
+  assert(WhisperLiveText.CACHE_VERSION === '96', 'live whisper cache version matches the app');
+
+  const overlapped = WhisperLiveText.merge(
+    '今日はいい天気ですね散歩に行きました',
+    '散歩に行きました桜が綺麗です',
+    'ja'
+  );
+  assert(overlapped === '今日はいい天気ですね散歩に行きました桜が綺麗です', 'chunk overlap is merged once');
+  assert((overlapped.match(/散歩に行きました/g) || []).length === 1, 'overlap phrase is not repeated');
+  const doubled = '明日の会議は三時から開始で資料は事前に共有してください';
+  assert(
+    WhisperLiveText.merge('', doubled + doubled, 'ja') === doubled,
+    'adjacent ja repeat collapses'
+  );
+  assert(
+    WhisperLiveText.merge('今日は晴れです', 'ご視聴ありがとうございました', 'ja') === '今日は晴れです',
+    'silence hallucination is dropped'
+  );
+  assert(
+    WhisperLiveText.merge('今日は晴れです', '桜が綺麗です', 'ja').includes('桜が綺麗です'),
+    'new speech is appended'
+  );
+  const quiet = new Float32Array(16000);
+  const loud = new Float32Array(16000);
+  loud.fill(0.05);
+  assert(WhisperLiveText.chunkIsSpeech(quiet) === false, 'silence is not sent to whisper');
+  assert(WhisperLiveText.chunkIsSpeech(loud) === true, 'speech energy is sent to whisper');
+
+  const liveSrc = fs.readFileSync(path.join(root, 'js/whisper-live.js'), 'utf8');
+  const workerSrc = fs.readFileSync(path.join(root, 'js/whisper-live-worker.js'), 'utf8');
+  const textSrc = fs.readFileSync(path.join(root, 'js/whisper-live-text.js'), 'utf8');
+  assert(!/getUserMedia\s*\(/.test(liveSrc), 'offline whisper does not open a microphone');
+  assert(!liveSrc.includes('SpeechRecognition') && !liveSrc.includes('webkitSpeechRecognition'), 'offline whisper does not touch web speech');
+  assert(liveSrc.includes('createMediaStreamSource'), 'pcm comes from the existing stream');
+  assert(liveSrc.includes('createGain'), 'worklet uses a silent pull sink');
+  assert(workerSrc.includes("task: 'transcribe'"), 'whisper task is transcribe');
+  assert(workerSrc.includes("language: msg.language || 'ja'"), 'default whisper language is ja');
+  assert(workerSrc.includes('numThreads = 1'), 'wasm stays single threaded without COOP');
+  assert(textSrc.includes('onnx-community/whisper-tiny'), 'tiny model id is pinned');
+  assert(index.includes('オフラインWhisper（試験）'), 'settings expose the opt-in toggle');
+  assert(index.includes('whisper-live.js?v=96'), 'live client is cache-busted');
+  assert(Transcriber.useContinuous('ja-JP', true) === false, 'iOS web speech stays continuous false');
+
+  const kick = methodBody(app, '  _kickIosRecognitionInRecordGesture() {');
+  assert(kick.indexOf('_usesOfflineWhisper()') !== -1 && kick.indexOf('_usesOfflineWhisper()') < kick.indexOf('_kickLiveRecognitionAtRecordStart'), 'offline mode returns before the iOS web speech kick');
+  const boot = methodBody(app, '  _bootstrapLiveTranscriptionAfterMic() {');
+  assert(boot.indexOf('_usesOfflineWhisper()') !== -1 && boot.indexOf('_usesOfflineWhisper()') < boot.indexOf('_kickLiveRecognitionAtRecordStart'), 'offline mode skips post-mic web speech');
+  const ensure = methodBody(app, '  _ensureLiveRecognition() {');
+  assert(ensure.indexOf('if (this._usesOfflineWhisper()) return;') === 0 || ensure.includes('if (this._usesOfflineWhisper()) return;'), 'ensure live does not start web speech in offline mode');
+  const caption = methodBody(app, '  _checkCaptionHealth() {');
+  assert(caption.includes('if (this._usesOfflineWhisper()) return;'), 'caption health does not revive web speech in offline mode');
+  const recover = methodBody(app, '  _autoRecoverLiveStt() {');
+  assert(recover.indexOf('_usesOfflineWhisper()') !== -1 && recover.indexOf('_usesOfflineWhisper()') < recover.indexOf('continueListening'), 'auto recover does not continue web speech first');
+  assert(recover.includes('ensureCapture'), 'offline recover still reopens the same recorder');
+  const startFn = methodBody(app, '  async _startRecording(options) {');
+  assert(startFn.indexOf('primeFromUserGesture') !== -1 && startFn.indexOf('primeFromUserGesture') < startFn.indexOf('this.recorder.start'), 'audio context is primed before the mic await');
+  assert(startFn.includes('if (!this._usesOfflineWhisper()) this._kickIosRecognitionInRecordGesture()'), 'web speech kick stays gated');
+}
+
 async function proveSpeechEndFlush() {
   const saved = Transcriber.jaStaleStopMs;
   Transcriber.jaStaleStopMs = 60;
@@ -1231,6 +1309,7 @@ async function proveStopWatch() {
 proveSpeechEndFlush()
   .then(() => proveStopWatch())
   .then(() => {
+proveOfflineWhisper();
 console.log('\n--- summary ---');
 rows.forEach((row) => {
   console.log(`${row.changed ? 'CHANGED' : 'SAME   '} ${row.name}`);
